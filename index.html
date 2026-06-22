@@ -732,40 +732,43 @@ function startIntro() {
   scene = 'COMBAT'; aimDir = players[0].facing;
   initCamera(players[0]);
   cutscene = { beats: introBeats(victim), i: 0, line: null, subtitle: '', lock: true, gate: null,
-               cam: { x: 520, y: 300, angle: 0 }, victim, flags: {}, advance: false };
+               cam: { x: 380, y: 215, angle: 0 }, reveal: { x: 355, y: 245, r: 168 }, victim, flags: {}, advance: false };
 }
-// 序章對白/演出腳本（節拍序列）。actor 參照：players[0]＝主角、victim＝同僚。
+// 序章對白/演出腳本（節拍序列）。對白以「對話泡」呈現於說話者頭頂（pos 給世界座標、不顯姓名）。
 function introBeats(victim) {
-  const prot = () => players[0];
+  const prot = () => players[0].pos, vic = () => victim.pos, guard = () => (introGuards[0] ? introGuards[0].pos : players[0].pos);
   return [
     { kind: 'wait', dur: 0.6 },
-    { kind: 'say', who: '同僚', text: '時候…終於到了。那東西，終於完成了。' },
-    { kind: 'say', who: '主角', text: '是啊。父親會以我們為傲。' },
-    { kind: 'say', who: '同僚', text: '再過不久，世界就會聽見父親的聲音。' },
-    { kind: 'say', who: '主角', text: '我去趟洗手間。' },
-    { kind: 'say', who: '同僚', text: '去吧。' },
-    { kind: 'move', actor: prot, to: { x: 470, y: 70 }, speed: 150 },   // 往上離開畫面
-    { kind: 'wait', dur: 0.7 },
-    { kind: 'move', actor: prot, to: { x: 320, y: 170 }, speed: 120 },  // 回來、停在同僚正後方
-    { kind: 'face', actor: prot, to: { x: 320, y: 240 } },
+    { kind: 'say', pos: vic, text: '時候…終於到了。那東西，終於完成了。' },
+    { kind: 'say', pos: prot, text: '是啊。父親會以我們為傲。' },
+    { kind: 'say', pos: vic, text: '再過不久，世界就會聽見父親的聲音。' },
+    { kind: 'say', pos: prot, text: '我去趟洗手間。' },
+    { kind: 'say', pos: vic, text: '去吧。' },
+    { kind: 'move', actor: () => players[0], to: { x: 470, y: 70 }, speed: 150 },   // 往上走出聚光、沒入迷霧
+    { kind: 'wait', dur: 0.8 },
+    { kind: 'move', actor: () => players[0], to: { x: 320, y: 170 }, speed: 120 },  // 自迷霧走回、停在同僚正後方
+    { kind: 'face', actor: () => players[0], to: { x: 320, y: 240 } },
     { kind: 'wait', dur: 0.4 },
     { kind: 'shoot', text: '按下左鍵攻擊' },                            // 等待左鍵 → 處決同僚
     { kind: 'wait', dur: 0.5 },
-    { kind: 'cam', to: 'follow' },                                       // 交接：鏡頭轉為跟隨主角
+    { kind: 'cam', to: 'follow' },                                       // 交接：鏡頭轉為跟隨主角（恢復一般迷霧）
     { kind: 'sub', text: '取得發射密碼（走到控制台按 E）' },
     { kind: 'do', fn: () => { introConsole = { x: 700, y: 240, used: false }; } },
     { kind: 'gate', on: 'codes' },
     { kind: 'sub', text: '前往出口、按 E 開門' },
     { kind: 'gate', on: 'door' },
     { kind: 'sub', text: '' },
-    { kind: 'do', fn: () => {   // 開門後：兩名守衛現身
+    { kind: 'cam', to: { x: 980, y: 240, angle: 0 } },                   // 開門後：固定機位看廊道
+    { kind: 'reveal', to: { x: 1010, y: 240, r: 185 } },                 // 聚光移到守衛區
+    { kind: 'do', fn: () => {   // 兩名守衛現身
         introGuards = [ { pos: { x: 1000, y: 215 }, facing: Math.PI, hue: 0, name: '守衛' },
                         { pos: { x: 1000, y: 265 }, facing: Math.PI, hue: 0, name: '守衛' } ];
       } },
-    { kind: 'wait', dur: 0.5 },
-    { kind: 'say', who: '主角', text: 'For our Father.' },
-    { kind: 'say', who: '守衛', text: 'For our Father.' },
+    { kind: 'wait', dur: 0.6 },
+    { kind: 'say', pos: prot, text: 'For our Father.' },
+    { kind: 'say', pos: guard, text: 'For our Father.' },
     { kind: 'do', fn: () => guardsJoin() },                              // 守衛入隊（帶初始武器）
+    { kind: 'cam', to: 'follow' },                                       // 交回跟隨（恢復一般迷霧）
     { kind: 'sub', text: '按 H 撤離　或 Shift+H 全員撤離' },
     { kind: 'gate', on: 'extract' },                                     // 永不自完成；由 endMission 收尾
   ];
@@ -791,15 +794,16 @@ function cutsceneTick(dt) {
   while (cs.beats[cs.i] && guard++ < 50) {
     const b = cs.beats[cs.i];
     if (!b._entered) { b._entered = true; b._t = 0; beatEnter(cs, b); }
-    const instant = (b.kind === 'sub' || b.kind === 'cam' || b.kind === 'do' || b.kind === 'face');
+    const instant = (b.kind === 'sub' || b.kind === 'cam' || b.kind === 'do' || b.kind === 'face' || b.kind === 'reveal');
     if (!instant) b._t += dt;
     if (beatDone(cs, b, dt)) { cs.i++; continue; }   // 完成 → 下一拍（同幀續處理 instant）
     break;                                            // 仍進行 → 等下一幀
   }
 }
 function beatEnter(cs, b) {
-  if (b.kind === 'say') { cs.line = { who: b.who, text: b.text }; cs.lock = true; cs.advance = false; }
+  if (b.kind === 'say') { cs.line = { text: b.text, pos: b.pos }; cs.lock = true; cs.advance = false; }   // pos＝說話者世界座標（對話泡定位）
   else if (b.kind === 'sub') cs.subtitle = b.text;
+  else if (b.kind === 'reveal') cs.reveal = b.to;   // 聚光區（null＝回一般迷霧）
   else if (b.kind === 'cam') cs.cam = (b.to === 'follow') ? null : b.to;
   else if (b.kind === 'do') { if (b.fn) b.fn(); }
   else if (b.kind === 'face') { const a = b.actor(); a.facing = b.angle != null ? b.angle : angTo(a.pos, b.to); }
@@ -1677,17 +1681,15 @@ function draw() {
   if (debugView) drawDebug();
   ctx.restore();
 
-  // ---- 戰爭迷霧（除錯時關閉；演出鎖控制時關閉＝電影感全視野）----
-  if (!debugView && !(cutscene && cutscene.lock)) drawFog();
+  // ---- 戰爭迷霧（除錯時關閉）。演出鎖控制時 drawFog 改挖「聚光圈」＝重點區外全是迷霧 ----
+  if (!debugView) drawFog();
 
   // ---- 霧上：淡牆骨架（空間參考）----
   ctx.save(); applyCam(); drawSkeleton(); ctx.restore();
 
-  // ---- 螢幕層：血條/標記/HUD/卡片 ----
-  drawScreenOverlays();
-  drawHUD();
-  drawCards();
-  if (cutscene) drawCutscene();   // 第0關：對白框 + 字幕（最上層）
+  // ---- 螢幕層：血條/標記/HUD/卡片 ----（演出鎖控制時隱藏＝乾淨電影感；gate 解鎖時照常）
+  if (!(cutscene && cutscene.lock)) { drawScreenOverlays(); drawHUD(); drawCards(); }
+  if (cutscene) drawCutscene();   // 第0關：對話泡 + 字幕（最上層）
 }
 
 // 第0關演出 actor（守衛＝非戰鬥單位點 + 名牌；控制台＝互動標記），畫在世界層
@@ -1720,19 +1722,54 @@ function drawCutscene() {
     ctx.textAlign = 'left';
   }
   if (cs.line) {
-    const bx = 140, bw = cv.width - 280, by = cv.height - 150, bh = 96;
-    ctx.fillStyle = 'rgba(8,11,16,0.9)'; ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = 'rgba(127,227,255,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText(cs.line.who, bx + 18, by + 28);
-    ctx.fillStyle = '#e6edf3'; ctx.font = '16px Consolas'; ctx.fillText(cs.line.text, bx + 18, by + 58);
-    ctx.fillStyle = 'rgba(205,214,224,0.55)'; ctx.font = '11px Consolas'; ctx.textAlign = 'right';
-    ctx.fillText('▶ 左鍵 / 空白 繼續', bx + bw - 14, by + bh - 12); ctx.textAlign = 'left';
+    const p = cs.line.pos ? cs.line.pos() : null;
+    if (p) drawSpeechBubble(w2s(p), cs.line.text);   // 對話泡：說話者頭頂、不顯姓名
   }
-  if (introActive) {   // 跳過提示（右下角）
+  if (introActive) {   // 跳過提示（右上角）
     ctx.fillStyle = 'rgba(205,214,224,0.5)'; ctx.font = '11px Consolas'; ctx.textAlign = 'right';
     ctx.fillText('Esc：跳過演出', cv.width - 14, 18); ctx.textAlign = 'left';
   }
+}
+// 簡易自動換行（依 measureText；headless stub 回固定寬→不換行，無例外）
+function wrapText(text, maxW) {
+  const out = []; let cur = '';
+  for (const ch of text) {
+    if (ch === '\n') { out.push(cur); cur = ''; continue; }
+    const t = cur + ch;
+    if (cur && ctx.measureText(t).width > maxW) { out.push(cur); cur = ch; } else cur = t;
+  }
+  if (cur || !out.length) out.push(cur);
+  return out;
+}
+// 對話泡：圓角框 + 指向頭頂的小尾，置於螢幕座標 s 的上方；夾在畫面內
+function drawSpeechBubble(s, text) {
+  ctx.font = '15px Consolas';
+  const lines = wrapText(text, 230), lh = 20, pad = 9;
+  let tw = 0; for (const l of lines) tw = Math.max(tw, ctx.measureText(l).width);
+  const w = tw + pad * 2, h = lines.length * lh + pad * 2 - 4;
+  let bx = clamp(s.x - w / 2, 8, cv.width - w - 8);
+  let by = s.y - 22 - h; if (by < 8) by = s.y + 22;   // 頭頂放不下就改放下方
+  const r = 8;
+  ctx.fillStyle = 'rgba(12,16,22,0.92)'; ctx.strokeStyle = 'rgba(127,227,255,0.65)'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(bx + r, by); ctx.arcTo(bx + w, by, bx + w, by + h, r); ctx.arcTo(bx + w, by + h, bx, by + h, r);
+  ctx.arcTo(bx, by + h, bx, by, r); ctx.arcTo(bx, by, bx + w, by, r); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // 指向頭頂的小三角尾
+  const tailX = clamp(s.x, bx + 14, bx + w - 14), tipY = (by > s.y) ? by : by + h, dir = (by > s.y) ? -1 : 1;
+  ctx.beginPath(); ctx.moveTo(tailX - 7, tipY); ctx.lineTo(tailX + 7, tipY); ctx.lineTo(tailX, tipY + dir * 10); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#e6edf3'; ctx.textAlign = 'center';
+  lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + pad + 14 + i * lh));
+  ctx.textAlign = 'left';
+}
+// （備用）舊版底部對話框＋姓名，改用對話泡後不再呼叫；保留供需要時切回
+function drawDialogueBoxLegacy(who, text) {
+  const bx = 140, bw = cv.width - 280, by = cv.height - 150, bh = 96;
+  ctx.fillStyle = 'rgba(8,11,16,0.9)'; ctx.fillRect(bx, by, bw, bh);
+  ctx.strokeStyle = 'rgba(127,227,255,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText(who || '', bx + 18, by + 28);
+  ctx.fillStyle = '#e6edf3'; ctx.font = '16px Consolas'; ctx.fillText(text, bx + 18, by + 58);
 }
 
 function drawGrid() {
@@ -1875,14 +1912,23 @@ function drawFog() {
   fctx.setTransform(1, 0, 0, 1, 0, 0);
   fctx.globalCompositeOperation = 'source-over'; fctx.globalAlpha = 1;
   fctx.fillStyle = CONFIG.fog.color; fctx.fillRect(0, 0, cv.width, cv.height);
-  fctx.globalCompositeOperation = 'destination-out'; fctx.fillStyle = '#000';
-  for (const p of activePlayers()) {
-    const c = w2s(p.pos);
-    fctx.beginPath(); fctx.arc(c.x, c.y, p.senseRadius * cam.scale, 0, Math.PI * 2); fctx.fill();   // 近身圈
-    const poly = visionPolygon(p);                                                                  // 視錐
-    fctx.beginPath(); const s0 = w2s(poly[0]); fctx.moveTo(s0.x, s0.y);
-    for (let i = 1; i < poly.length; i++) { const s = w2s(poly[i]); fctx.lineTo(s.x, s.y); }
-    fctx.closePath(); fctx.fill();
+  fctx.globalCompositeOperation = 'destination-out';
+  if (cutscene && cutscene.lock && cutscene.reveal) {
+    // 演出聚光：只挖出重點演出區（羽化圓），其餘全包在迷霧裡（主角走出此圈＝沒入迷霧）
+    const rv = cutscene.reveal, c = w2s(rv), r = rv.r * cam.scale;
+    const g = fctx.createRadialGradient(c.x, c.y, r * 0.62, c.x, c.y, r);
+    g.addColorStop(0, '#000'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    fctx.fillStyle = g; fctx.beginPath(); fctx.arc(c.x, c.y, r, 0, Math.PI * 2); fctx.fill();
+  } else {
+    fctx.fillStyle = '#000';
+    for (const p of activePlayers()) {
+      const c = w2s(p.pos);
+      fctx.beginPath(); fctx.arc(c.x, c.y, p.senseRadius * cam.scale, 0, Math.PI * 2); fctx.fill();   // 近身圈
+      const poly = visionPolygon(p);                                                                  // 視錐
+      fctx.beginPath(); const s0 = w2s(poly[0]); fctx.moveTo(s0.x, s0.y);
+      for (let i = 1; i < poly.length; i++) { const s = w2s(poly[i]); fctx.lineTo(s.x, s.y); }
+      fctx.closePath(); fctx.fill();
+    }
   }
   fctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(fogCanvas, 0, 0);
