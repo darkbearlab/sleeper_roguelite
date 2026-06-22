@@ -10,6 +10,7 @@
 - 所有可調數值/內容在 `index.html` 檔頂：`CONFIG` / `WEAPONS` / `ABILITIES` / `EQUIPMENT` / `ITEMS` / `ARCHETYPES` / `ENEMY_TYPES`(敵人類型) / `MAPS`(多張戰鬥地圖) / `ROADMAP`。
 - 敵人＝資料驅動類型（`enemySpawns.type`，預設 grunt）：grunt/dog(警犬)/heavy_lmg/heavy_shot；重裝靠裝甲「機率整發擋下非穿甲」(武器 `pierce`)而非高血量。詳見 §4.16。
 - 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。
+- 潛行/警覺層（§4.19，Stage 1 已做）：IDLE 敵短錐+有限視距(`canSee` 依狀態)；發現玩家走「識別空窗」(`enemy.detect` 累滿才 ENGAGED，永鎖；槍聲/被擊中仍瞬交戰)；overwatch(`idleTick`) 不對 IDLE 敵開火。`CONFIG.stealth`。後續 Stage 2-5：草叢(`inConceal` hook)/消音手槍/望遠/哨點圖。
 - 第0關/cutscene 導演（§4.18）：`initRun` 每局先 `startIntro()`（`intro` 地圖、scene COMBAT + `cutscene` 節拍導演，可 Esc 跳）→ 序章休息 → 路線圖。通用導演 say/move/face/wait/cam/sub/do/shoot/gate 可重用於未來劇情。改 update/draw/initRun 時注意 `cutscene`/`introActive` 分支。
 - 場景：`MAP / COMBAT / REST / ARMORY / RUNEND / RUNWIN / EDITOR`（有遊戲內關卡編輯器）。
 - 完成的更新都 commit + push 到 GitHub `darkbearlab/sleeper_roguelite`（git 認證走系統 Git Credential Manager）。
