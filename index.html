@@ -245,11 +245,11 @@ function makeRecruit(used) {
 const ROADMAP = {
   start: [0, 1],
   nodes: [
-    { id: 0, col: 0, row: 1, type: 'COMBAT' },                  // map 預設 alpha
+    { id: 0, col: 0, row: 1, type: 'COMBAT' },                  // map 預設 alpha（開闊庭院）
     { id: 1, col: 0, row: 3, type: 'COMBAT', map: 'bravo' },    // 門/掩體圖（開門才見敵）
     { id: 2, col: 1, row: 0, type: 'ARMORY' },                  // 軍械庫：三選一拿 武器/裝備/技能/道具
     { id: 3, col: 1, row: 2, type: 'REST' },
-    { id: 4, col: 1, row: 4, type: 'COMBAT' },
+    { id: 4, col: 1, row: 4, type: 'COMBAT', map: 'lanes' },    // 雙線哨廊（潛行/換道繞側）
     { id: 5, col: 2, row: 1, type: 'COMBAT', map: 'outpost' },  // 前哨站（潛行/哨點示範）
     { id: 6, col: 2, row: 3, type: 'COMBAT', map: 'bravo' },    // 門/掩體圖
     { id: 7, col: 3, row: 1, type: 'REST' },
@@ -330,44 +330,50 @@ function rectWalls(x1, y1, x2, y2) {
 }
 // 兩張戰鬥地圖（registry）。alpha＝原圖；bravo＝門+按鈕+低矮牆，敵人預設閒置藏在門後（開門才現形）。
 const MAPS = {
+  // alpha＝開闊庭院：無橫貫隔牆，散置掩體島＋草叢＋3×3 路網＝可上/下繞到哨兵側後（繞背）、可叢間潛行。
   alpha: {
-    label: '開闊區',
+    label: '開闊庭院',
     walls: [
-      { x1: 40, y1: 40, x2: 1240, y2: 40 },
-      { x1: 1240, y1: 40, x2: 1240, y2: 680 },
-      { x1: 1240, y1: 680, x2: 40, y2: 680 },
-      { x1: 40, y1: 680, x2: 40, y2: 40 },
-      { x1: 640, y1: 40, x2: 640, y2: 320 },     // choke 上
-      { x1: 640, y1: 400, x2: 640, y2: 680 },    // choke 下（缺口 y320~400）
-      ...rectWalls(270, 310, 330, 410),          // 左掩體
-      ...rectWalls(860, 240, 920, 320),          // 右上掩體
-      ...rectWalls(860, 400, 920, 480),          // 右下掩體
+      { x1: 40, y1: 40, x2: 1240, y2: 40 }, { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 }, { x1: 40, y1: 680, x2: 40, y2: 40 },
+      ...rectWalls(420, 240, 480, 300), ...rectWalls(420, 420, 480, 480),   // 左掩體島
+      ...rectWalls(640, 240, 700, 300), ...rectWalls(640, 420, 700, 480),   // 中央掩體島（繞行）
+      ...rectWalls(820, 240, 880, 300), ...rectWalls(820, 420, 880, 480),   // 右掩體島
     ],
     doors: [], lowWalls: [], buttons: [],
+    bushes: [
+      { x: 200, y: 300, w: 170, h: 130 },   // 左：進場側掩蔽
+      { x: 480, y: 120, w: 160, h: 130 },   // 上路掩蔽
+      { x: 480, y: 470, w: 160, h: 130 },   // 下路掩蔽
+      { x: 880, y: 300, w: 170, h: 130 },   // 右：近撤離掩蔽
+    ],
     waypoints: [
-      { id: 0,  pos: { x: 150,  y: 360 }, tags: ['patrol', 'spawn'] },
-      { id: 1,  pos: { x: 390,  y: 200 }, tags: ['cover'] },
-      { id: 2,  pos: { x: 390,  y: 520 }, tags: ['cover'] },
-      { id: 3,  pos: { x: 560,  y: 360 }, tags: ['choke'] },
-      { id: 4,  pos: { x: 720,  y: 360 }, tags: ['choke'] },
-      { id: 5,  pos: { x: 780,  y: 200 }, tags: ['rush'] },
-      { id: 6,  pos: { x: 780,  y: 520 }, tags: ['rush'] },
-      { id: 7,  pos: { x: 960,  y: 200 }, tags: ['flank', 'vantage'] },
-      { id: 8,  pos: { x: 960,  y: 520 }, tags: ['flank', 'vantage'] },
-      { id: 9,  pos: { x: 1000, y: 360 }, tags: ['vantage', 'cover'] },
-      { id: 10, pos: { x: 1180, y: 360 }, tags: ['patrol'] },
+      { id: 0,  pos: { x: 130,  y: 360 }, tags: ['patrol', 'spawn'] },
+      { id: 1,  pos: { x: 340,  y: 180 }, tags: ['cover'] },
+      { id: 2,  pos: { x: 340,  y: 360 }, tags: ['patrol'] },
+      { id: 3,  pos: { x: 340,  y: 540 }, tags: ['cover'] },
+      { id: 4,  pos: { x: 560,  y: 180 }, tags: ['flank'] },
+      { id: 5,  pos: { x: 560,  y: 360 }, tags: ['choke'] },
+      { id: 6,  pos: { x: 560,  y: 540 }, tags: ['flank'] },
+      { id: 7,  pos: { x: 760,  y: 180 }, tags: ['flank', 'vantage'] },
+      { id: 8,  pos: { x: 760,  y: 360 }, tags: ['choke'] },
+      { id: 9,  pos: { x: 760,  y: 540 }, tags: ['flank', 'vantage'] },
+      { id: 10, pos: { x: 960,  y: 180 }, tags: ['vantage'] },
+      { id: 11, pos: { x: 960,  y: 360 }, tags: ['patrol'] },
+      { id: 12, pos: { x: 960,  y: 540 }, tags: ['vantage'] },
+      { id: 13, pos: { x: 1140, y: 360 }, tags: ['patrol'] },
     ],
     edges: [
-      [0, 1], [0, 2], [1, 3], [2, 3], [3, 4],
-      [4, 5], [4, 6], [4, 9], [5, 7], [6, 8], [7, 9], [8, 9], [9, 10],
+      [0, 2], [1, 2], [2, 3], [4, 5], [5, 6], [7, 8], [8, 9], [10, 11], [11, 12],
+      [1, 4], [4, 7], [7, 10], [2, 5], [5, 8], [8, 11], [3, 6], [6, 9], [9, 12], [11, 13],
     ],
     entryPoints: [{ x: 110, y: 360 }],
     extractionPoints: [{ x: 1190, y: 360 }],
     enemySpawns: [
-      { nodeId: 4, personality: 'rusher'  },     // 步兵
-      { nodeId: 5, type: 'dog' },                 // 警犬（衝臉連咬）
-      { nodeId: 8, personality: 'flanker' },      // 步兵側翼
-      { nodeId: 9, type: 'heavy_shot' },          // 霰彈兵（帶甲、推進）
+      { nodeId: 5, personality: 'flanker', facing: Math.PI },   // 中左哨（面向進場側）
+      { nodeId: 8, personality: 'rusher',  facing: Math.PI },   // 中右哨
+      { nodeId: 7, personality: 'flanker', facing: Math.PI },   // 上路哨
+      { nodeId: 12, type: 'heavy_shot',    facing: Math.PI },   // 右下霰彈兵
     ],
   },
   // bravo：3 區（兩道隔牆，缺口各一扇門）。中段藏閒置敵人＋低矮牆掩體；按鈕 b1 遠端開 door2 通往撤離。
@@ -450,44 +456,92 @@ const MAPS = {
     enemySpawns: [],
     prisoners: [],
   },
-  // outpost：分層哨點示範圖（Stage 5）。兩道隔牆＝兩處 choke 哨點，守兵面向進場側(左)；
-  // 草叢讓玩家繞過窄錐/消音點名；潛行＝別讓識別條累滿。
+  // outpost v2＝前哨站：兩處哨點改用「中央短牆＋上下繞道」(不再整道隔牆)，可繞過哨兵側後或叢間潛行。
   outpost: {
     label: '前哨站',
     walls: [
       { x1: 40, y1: 40, x2: 1240, y2: 40 }, { x1: 1240, y1: 40, x2: 1240, y2: 680 },
       { x1: 1240, y1: 680, x2: 40, y2: 680 }, { x1: 40, y1: 680, x2: 40, y2: 40 },
-      { x1: 480, y1: 40, x2: 480, y2: 280 }, { x1: 480, y1: 440, x2: 480, y2: 680 },   // 隔牆1（choke 缺口 y280~440）
-      { x1: 860, y1: 40, x2: 860, y2: 280 }, { x1: 860, y1: 440, x2: 860, y2: 680 },   // 隔牆2（choke 缺口 y280~440）
+      { x1: 460, y1: 300, x2: 460, y2: 420 },   // CP1 中央短牆（上下可繞）
+      { x1: 880, y1: 300, x2: 880, y2: 420 },   // CP2 中央短牆
+      ...rectWalls(380, 180, 440, 240), ...rectWalls(380, 480, 440, 540),   // CP1 上/下繞道掩體
+      ...rectWalls(800, 180, 860, 240), ...rectWalls(800, 480, 860, 540),   // CP2 上/下繞道掩體
     ],
     doors: [], lowWalls: [], buttons: [],
     bushes: [
-      { x: 300, y: 300, w: 150, h: 120 },   // 左區：接近 choke1 的掩蔽
-      { x: 600, y: 150, w: 150, h: 130 },   // 中區上路掩蔽（繞過 choke）
-      { x: 600, y: 430, w: 150, h: 130 },   // 中區下路掩蔽
-      { x: 690, y: 300, w: 150, h: 120 },   // 接近 choke2 的掩蔽
+      { x: 300, y: 300, w: 140, h: 120 },   // 左：接近 CP1 的掩蔽
+      { x: 600, y: 170, w: 160, h: 130 },   // 上繞道掩蔽
+      { x: 600, y: 430, w: 160, h: 130 },   // 下繞道掩蔽
+      { x: 900, y: 300, w: 160, h: 120 },   // 右：近撤離掩蔽
     ],
     waypoints: [
-      { id: 0, pos: { x: 150,  y: 360 }, tags: ['patrol', 'spawn'] },
-      { id: 1, pos: { x: 360,  y: 360 }, tags: ['patrol'] },
-      { id: 2, pos: { x: 480,  y: 360 }, tags: ['choke'] },        // choke1 哨點
-      { id: 3, pos: { x: 660,  y: 210 }, tags: ['cover', 'flank'] },
-      { id: 4, pos: { x: 660,  y: 510 }, tags: ['cover', 'flank'] },
-      { id: 5, pos: { x: 760,  y: 360 }, tags: ['patrol'] },
-      { id: 6, pos: { x: 860,  y: 360 }, tags: ['choke'] },        // choke2 哨點
-      { id: 7, pos: { x: 1040, y: 360 }, tags: ['vantage'] },
-      { id: 8, pos: { x: 1180, y: 360 }, tags: ['patrol'] },
+      { id: 0, pos: { x: 130,  y: 360 }, tags: ['patrol', 'spawn'] },
+      { id: 1, pos: { x: 340,  y: 360 }, tags: ['patrol'] },
+      { id: 2, pos: { x: 560,  y: 180 }, tags: ['cover', 'flank'] },   // CP1 上繞道
+      { id: 3, pos: { x: 560,  y: 540 }, tags: ['cover', 'flank'] },   // CP1 下繞道
+      { id: 4, pos: { x: 560,  y: 360 }, tags: ['choke'] },           // CP1 哨點（短牆後）
+      { id: 5, pos: { x: 760,  y: 360 }, tags: ['patrol'] },          // 中段開闊
+      { id: 6, pos: { x: 980,  y: 180 }, tags: ['cover', 'flank'] },   // CP2 上繞道
+      { id: 7, pos: { x: 980,  y: 540 }, tags: ['cover', 'flank'] },   // CP2 下繞道
+      { id: 8, pos: { x: 980,  y: 360 }, tags: ['choke'] },           // CP2 哨點
+      { id: 9, pos: { x: 1140, y: 360 }, tags: ['patrol'] },
     ],
-    edges: [[0, 1], [1, 2], [2, 3], [2, 4], [3, 5], [4, 5], [5, 6], [6, 7], [7, 8]],
+    edges: [[0, 1], [1, 2], [1, 3], [2, 4], [3, 4], [4, 5], [5, 6], [5, 7], [6, 8], [7, 8], [8, 9]],
     entryPoints: [{ x: 110, y: 360 }],
     extractionPoints: [{ x: 1190, y: 360 }],
     enemySpawns: [
-      { nodeId: 2, personality: 'flanker', facing: Math.PI },   // choke1 守兵（面向進場側）
-      { nodeId: 4, personality: 'rusher',  facing: Math.PI },   // 下路側翼哨
-      { nodeId: 6, type: 'heavy_lmg',      facing: Math.PI },   // choke2 重哨（帶甲，逼繞背/消音）
-      { nodeId: 7, type: 'heavy_shot' },                        // 右區守衛
+      { nodeId: 4, personality: 'flanker', facing: Math.PI },   // CP1 哨兵（短牆後，面向進場側）
+      { nodeId: 3, personality: 'rusher',  facing: Math.PI },   // CP1 下繞道哨
+      { nodeId: 8, type: 'heavy_lmg',      facing: Math.PI },   // CP2 重哨（帶甲，逼繞背/消音）
+      { nodeId: 7, type: 'heavy_shot',     facing: Math.PI },   // CP2 下繞道守衛
     ],
     prisoners: [],
+  },
+  // lanes＝雙線哨廊：兩道平行低矮牆(看得過去/可越)把場地分三道，缺口對齊連接點＝可換道繞到哨兵側後。
+  lanes: {
+    label: '雙線哨廊',
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 }, { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 }, { x1: 40, y1: 680, x2: 40, y2: 40 },
+    ],
+    doors: [], buttons: [],
+    lowWalls: [   // 兩道平行低矮牆，缺口對齊 x340/560/760/960（連接點）＝可換道
+      { x1: 60, y1: 270, x2: 300, y2: 270 }, { x1: 380, y1: 270, x2: 520, y2: 270 }, { x1: 600, y1: 270, x2: 720, y2: 270 }, { x1: 800, y1: 270, x2: 920, y2: 270 }, { x1: 1000, y1: 270, x2: 1220, y2: 270 },
+      { x1: 60, y1: 450, x2: 300, y2: 450 }, { x1: 380, y1: 450, x2: 520, y2: 450 }, { x1: 600, y1: 450, x2: 720, y2: 450 }, { x1: 800, y1: 450, x2: 920, y2: 450 }, { x1: 1000, y1: 450, x2: 1220, y2: 450 },
+    ],
+    bushes: [
+      { x: 200, y: 120, w: 150, h: 120 },   // 上道掩蔽
+      { x: 600, y: 300, w: 160, h: 120 },   // 中道掩蔽（近重機槍哨）
+      { x: 820, y: 470, w: 160, h: 120 },   // 下道掩蔽
+    ],
+    waypoints: [
+      { id: 0,  pos: { x: 130,  y: 360 }, tags: ['patrol', 'spawn'] },
+      { id: 1,  pos: { x: 340,  y: 180 }, tags: ['cover'] },
+      { id: 2,  pos: { x: 340,  y: 360 }, tags: ['patrol'] },
+      { id: 3,  pos: { x: 340,  y: 540 }, tags: ['cover'] },
+      { id: 4,  pos: { x: 560,  y: 180 }, tags: ['flank'] },
+      { id: 5,  pos: { x: 560,  y: 360 }, tags: ['patrol'] },
+      { id: 6,  pos: { x: 560,  y: 540 }, tags: ['flank'] },
+      { id: 7,  pos: { x: 760,  y: 180 }, tags: ['flank'] },
+      { id: 8,  pos: { x: 760,  y: 360 }, tags: ['choke'] },
+      { id: 9,  pos: { x: 760,  y: 540 }, tags: ['flank'] },
+      { id: 10, pos: { x: 960,  y: 180 }, tags: ['vantage'] },
+      { id: 11, pos: { x: 960,  y: 360 }, tags: ['patrol'] },
+      { id: 12, pos: { x: 960,  y: 540 }, tags: ['vantage'] },
+      { id: 13, pos: { x: 1140, y: 360 }, tags: ['patrol'] },
+    ],
+    edges: [
+      [0, 2], [1, 2], [2, 3], [4, 5], [5, 6], [7, 8], [8, 9], [10, 11], [11, 12],
+      [1, 4], [4, 7], [7, 10], [2, 5], [5, 8], [8, 11], [3, 6], [6, 9], [9, 12], [11, 13],
+    ],
+    entryPoints: [{ x: 110, y: 360 }],
+    extractionPoints: [{ x: 1190, y: 360 }],
+    enemySpawns: [
+      { nodeId: 2, personality: 'rusher',  facing: Math.PI },   // 中道左哨
+      { nodeId: 1, personality: 'flanker', facing: Math.PI },   // 上道哨
+      { nodeId: 8, type: 'heavy_lmg',      facing: Math.PI },   // 中道重機槍（換道繞背或穿甲）
+      { nodeId: 12, type: 'heavy_shot',    facing: Math.PI },   // 下道右守衛
+    ],
   },
 };
 
@@ -2558,11 +2612,12 @@ function drawRoadmap() {
   ctx.fillText('點擊（或按數字鍵）前往發亮的節點 ▷', cv.width / 2, 80);
   // 圖例（區分戰鬥地圖）
   ctx.font = '12px Consolas';
-  ctx.fillStyle = hsl(8, 65, 55); ctx.fillText('⚔ 開闊區', cv.width / 2 - 320, 102);
-  ctx.fillStyle = hsl(35, 70, 58); ctx.fillText('⊟ 門禁設施', cv.width / 2 - 210, 102);
-  ctx.fillStyle = hsl(110, 55, 55); ctx.fillText('⚔ 前哨站', cv.width / 2 - 70, 102);
-  ctx.fillStyle = hsl(48, 75, 58); ctx.fillText('★ 軍械庫', cv.width / 2 + 60, 102);
-  ctx.fillStyle = hsl(150, 60, 55); ctx.fillText('＋ 休息', cv.width / 2 + 190, 102);
+  ctx.fillStyle = hsl(8, 65, 55); ctx.fillText('⚔ 開闊庭院', cv.width / 2 - 350, 102);
+  ctx.fillStyle = hsl(35, 70, 58); ctx.fillText('⊟ 門禁設施', cv.width / 2 - 230, 102);
+  ctx.fillStyle = hsl(110, 55, 55); ctx.fillText('⚔ 前哨站', cv.width / 2 - 110, 102);
+  ctx.fillStyle = hsl(190, 60, 55); ctx.fillText('⚔ 雙線哨廊', cv.width / 2 - 10, 102);
+  ctx.fillStyle = hsl(48, 75, 58); ctx.fillText('★ 軍械庫', cv.width / 2 + 120, 102);
+  ctx.fillStyle = hsl(150, 60, 55); ctx.fillText('＋ 休息', cv.width / 2 + 230, 102);
 
   const avail = roadAvailable.filter(id => !roadCompleted.has(id));
   // 邊
@@ -2580,7 +2635,8 @@ function drawRoadmap() {
     const hover = isAvail && Math.hypot(mouse.mx - p.x, mouse.my - p.y) <= 26;
     const isBravo = n.type === 'COMBAT' && (n.map === 'bravo');
     const isOutpost = n.type === 'COMBAT' && (n.map === 'outpost');
-    const base = n.type === 'REST' ? 150 : n.type === 'ARMORY' ? 48 : (isBravo ? 35 : isOutpost ? 110 : 8);   // hue: 開闊紅、門禁橙、前哨綠、軍械庫金、休息青
+    const isLanes = n.type === 'COMBAT' && (n.map === 'lanes');
+    const base = n.type === 'REST' ? 150 : n.type === 'ARMORY' ? 48 : (isBravo ? 35 : isOutpost ? 110 : isLanes ? 190 : 8);   // hue: 開闊紅、門禁橙、前哨綠、哨廊藍、軍械庫金、休息青
     let fill, stroke;
     if (done) { fill = 'rgba(70,80,90,0.5)'; stroke = 'rgba(120,130,140,0.6)'; }
     else if (isAvail) { fill = hsl(base, 65, hover ? 52 : 42); stroke = '#ffffff'; }
