@@ -1,0 +1,2223 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SLEEPER — 垂直切片 (Vertical Slice)</title>
+<style>
+  html,body{margin:0;height:100%;background:#06080d;overflow:hidden;
+    font-family:Consolas,"Courier New",monospace;color:#cdd6e0;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{background:#06080d;image-rendering:auto;cursor:crosshair;
+    box-shadow:0 0 40px #000a;max-width:100%;max-height:100%;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="1280" height="720"></canvas></div>
+<script>
+"use strict";
+/* =====================================================================
+   CODENAME: SLEEPER — Phase 1 垂直切片（戰術化 + 旋轉視角 + 戰爭迷霧）
+   原生 JS + Canvas 2D，零外部相依。
+   分區： CONFIG / Math / Map / LoS+Vision / Camera / State /
+          Possession / Combat(換彈/發散) / IdleAI / EnemyAI /
+          Extraction / Movement / Input / Update / Render(迷霧)
+   ===================================================================== */
+
+/* =====================================================================
+   CONFIG — 所有可調數值集中於此（全部為佔位值，待調平衡）
+   ===================================================================== */
+const CONFIG = {
+  // --- 規格指定值 ---
+  switchHandoverMs: 0,      // 切換附身交接延遲（0 = 無 CD）
+  idleAccuracyMult: 0.5,    // 待機精度倍率（待機基礎發散 = spreadBase / 此值，越低越散）
+  idleReactionDelay: 0.4,   // 待機：看到敵人到開火的延遲 (s)
+  idleFireRateMult: 0.7,    // 待機射速倍率（越低越慢）
+  idleTap: { size: 3, gap: 0.55 },  // 點放(TAP)：每 burst 發數 / burst 後停頓秒數（讓 bloom 回復）
+  unitHp: 100,
+  moveSpeed: 110,           // px/s（戰術化：放慢）
+  turnSpeed: 480,           // deg/s（預設砲塔轉速；實際以各武器 turnSpeed 為準）
+  mouseSensitivity: 0.0035, // FPS 式滑鼠鎖定靈敏度（rad/px）。轉速不夠快時砲塔會追不上＝轉向延遲
+  // Shift 奔跑：奔跑倍率 = base − (武器weight−1)×weightPenalty，夾在 [minMult, base]（越重跑越慢）
+  sprint: { base: 1.9, weightPenalty: 0.5, minMult: 1.1 },
+  // 武器數值移至下方 WEAPONS 目錄（可指派、未來可換）
+
+  timeBudget: 90,
+  reinforce: { startInterval: 2.0, rampEvery: 10, rampDelta: -0.3, minInterval: 0.4 },
+  hysteresisBonus: 25,
+  squadSize: 3,
+  // 跨關回復：每場戰鬥開始時，存活成員「缺血」回復的比例。
+  // 1.0＝自動全補（目前行為）；0＝殘血照舊帶入；0.5＝回復一半缺口。當前血量已跨關攜帶，調此鈕即生效。
+  interMissionHealFrac: 1.0,
+
+  // 共用倉庫 / 裝備 / 搜刮（meta 庫存層；佔位旋鈕）
+  loadout: {
+    slotsPerMember: 2,             // 倉庫容量 = 生還人數 × 此值（喚醒/陣亡即時改變）
+    abilitiesCountTowardCap: true, // 技能是否佔倉庫格（實測太擠可關）
+    scavengeChoices: 3,            // 搜刮抽選數（三選一，用 agency 蓋過純 RNG）
+  },
+  // 彈藥：每武器類別一個共用儲備（reserve）。本階段「不咬人」＝寬裕值，正常一場打不完。
+  // pistol＝底線武器，彈藥視為無限、不納入分配。
+  ammo: { stockStart: 600, defaultAlloc: 240, salvageAlly: 120, salvageEnemy: 60 },
+  pickupRadius: 26,                // 被附身單位走到掉落物多近會撿進臨時背包
+
+  // 地形 / 互動（門、按鈕、低矮牆）
+  interactRadius: 40,             // 互動(開關門/按鈕)距離；門以「到門線段最近點」量距，整扇門寬都好按
+  enemyHearRadius: 320,           // 玩家開火驚動半徑（半徑內 IDLE 敵人 → ENGAGED；不論命中）
+  // 低矮牆＝掩體：玩家穿越減速、敵人視為實體繞行、不擋視線、子彈「遠距機率擋／貼牆可越射」
+  lowWall: { slow: 0.3, touchR: 12, closeRange: 90, blockChance: 0.55 },
+
+  // --- 額外佔位 ---
+  unitRadius: 12,
+  nodeReach: 22,
+  extractRadius: 34,
+  sweepAmpDeg: 70,
+  sweepSpeed: 35,
+  wanderAmpDeg: 28,         // WANDER：相對「進入閒置時正前方」的最大偏擺（度，視野不離正前方）
+  wanderSpeed: 45,          // WANDER：擺頭轉速（度/秒，較慢＝沉穩不慌張）
+  ghostAlertTime: 4.0,
+  ghostCloseRange: 150,
+  lowHpFrac: 0.35,
+
+  // 戰爭迷霧 / 視野（敵我共用）：前方 90° 視錐(距離無限、被牆遮斷) + 360° 近身感知
+  vision: {
+    coneHalfDeg: 45,        // 視錐半角（總 90°）
+    senseRadius: 90,        // 近身感知半徑（基礎；× 單位 strength，越強越長）
+    fanRays: 28,            // 視錐渲染射線數
+    coneMax: 2200,          // 視錐射線最大長度（≈無限，實際被牆截斷）
+  },
+  fog: { color: '#05070b', skeletonAlpha: 0.16 },
+
+  // 旋轉鏡頭（跟隨被附身單位、使其朝上）；anchorY＝單位在畫面的縱向位置(0.5置中, 越大越靠下→前方視野越長)
+  camera: { scale: 1.0, followLerp: 9, rotateLerp: 8, anchorY: 0.66 },
+
+  enemy: {
+    moveSpeed: 85,
+    hp: 70,
+    reactionDelay: 0.35,
+    strength: 1.0,
+    // 敵人武器＝WEAPONS.carbine（已入目錄、可掉落/撿取/裝備）；數值在 WEAPONS 調整
+  },
+
+  // 敵人選點權重
+  chargeMul: 1.7,   // 未能交火時加碼推進
+  holdProxMul: 0.2, // 已能交火時壓低推進（拉開距離對射）
+  ai: {
+    rusher:  { tags: { rush: 20, choke: 10, patrol: 5 },               wRush: 700, wFlank: 0,   wExpose: 5,  wSight: 25 },
+    flanker: { tags: { flank: 30, vantage: 15, cover: 25, patrol: 5 }, wRush: 500, wFlank: 120, wExpose: 70, wSight: 25 },
+  },
+};
+
+const SPECIAL_TAGS = ['flank', 'vantage', 'choke'];
+
+/* =====================================================================
+   WEAPONS / ABILITIES — 資料驅動（未來可掉落/更換）
+   每把武器：威力 / 射速 / 射程 / 彈速 / 發散(基礎,連射,上限,回復) / 彈夾 / 換彈 / 總彈藥 /
+            迴轉速度(turnSpeed) / 稀有度(rarity)
+   ===================================================================== */
+// weight：重量（影響 Shift 奔跑倍率，越重跑越慢）
+const WEAPONS = {
+  // pistol＝底線武器（§7）：弱、永遠有、彈藥無限（不納入分配/儲備）
+  pistol:{ name: 'Pistol',rarity: 'common',   weight: 0.5, damage: 10, fireRate: 6,  range: 280, projSpeed: 680, spreadBase: 2.5, spreadPerShot: 2.0, spreadMax: 12, spreadRecover: 10, magazine: 12, reloadTime: 1.1, turnSpeed: 600 },
+  smg:   { name: 'SMG',   rarity: 'common',   weight: 0.9, damage: 13, fireRate: 12, range: 330, projSpeed: 740, spreadBase: 3.2, spreadPerShot: 2.6, spreadMax: 16, spreadRecover: 11, magazine: 35, reloadTime: 1.3, turnSpeed: 560 },
+  pdw:   { name: 'PDW',   rarity: 'uncommon', weight: 1.2, damage: 16, fireRate: 9,  range: 380, projSpeed: 780, spreadBase: 2.2, spreadPerShot: 2.2, spreadMax: 13, spreadRecover: 9,  magazine: 40, reloadTime: 1.5, turnSpeed: 520 },
+  rifle: { name: 'Rifle', rarity: 'common',   weight: 1.8, damage: 22, fireRate: 7,  range: 470, projSpeed: 840, spreadBase: 1.4, spreadPerShot: 1.8, spreadMax: 10, spreadRecover: 8,  magazine: 30, reloadTime: 1.8, turnSpeed: 440 },
+  // carbine＝敵人武器（現入目錄，可掉落/撿取/裝備）；dmr＝稀有戰利品（搜刮天花板）
+  carbine:{ name:'Carbine',rarity:'common',   weight: 1.3, damage: 9,  fireRate: 3,  range: 340, projSpeed: 640, spreadBase: 3,   spreadPerShot: 1.8, spreadMax: 14, spreadRecover: 8,  magazine: 30, reloadTime: 2.0, turnSpeed: 360 },
+  dmr:   { name: 'DMR',   rarity: 'rare',     weight: 2.0, damage: 34, fireRate: 3.5,range: 560, projSpeed: 980, spreadBase: 1.0, spreadPerShot: 1.4, spreadMax: 8,  spreadRecover: 7,  magazine: 15, reloadTime: 2.0, turnSpeed: 400 },
+};
+const WEAPON_IDS = Object.keys(WEAPONS);
+const FLOOR_WEAPON = 'pistol';                              // 預設武器底線（§7）
+const RECRUIT_WEAPON_IDS = ['smg', 'pdw', 'rifle'];        // 隨機招募只抽這些（不含底線/敵槍/稀有）
+const LOOT_WEAPON_IDS = ['smg', 'pdw', 'rifle', 'carbine', 'dmr']; // 搜刮戰利品池（含稀有）
+const isInfiniteAmmo = (id) => id === FLOOR_WEAPON;        // 底線武器彈藥無限
+const RARITY_COLOR = { common: '#b8c2cc', uncommon: '#5fd06b', rare: '#5aa9ff', epic: '#c07bff', legendary: '#ffb454' };
+const rarityColor = (r) => RARITY_COLOR[r] || '#b8c2cc';
+
+// 技能：目前全部佔位＝恢復生命，有 CD（僅手動可用）。多種＝倉庫換技能有取捨（量/CD 不同）。
+const ABILITIES = {
+  heal:     { name: 'Heal',      cooldown: 8,  heal: 25 },
+  medkit:   { name: 'Medkit',    cooldown: 14, heal: 50 },
+  firstaid: { name: 'First Aid', cooldown: 5,  heal: 14 },
+};
+const ABILITY_IDS = Object.keys(ABILITIES);
+const LOOT_ABILITY_IDS = ['medkit', 'firstaid', 'heal']; // 搜刮可出的技能 item
+
+// 裝備（持續被動，每單位 1 槽；效果於 makePlayer 套用）。fx 欄位皆為佔位倍率/加值。
+//   maxHpAdd / senseMul / reloadMul / magMul / dmgResist(0~1減傷) / spreadMul(發散×) / turnMul / moveMul
+const EQUIPMENT = {
+  armor:    { name: 'Armor',     rarity: 'uncommon', fx: { dmgResist: 0.15 } },
+  scope:    { name: 'Scope',     rarity: 'uncommon', fx: { senseMul: 1.4 } },
+  quickmag: { name: 'QuickMag',  rarity: 'uncommon', fx: { reloadMul: 0.7 } },
+  extmag:   { name: 'ExtMag',    rarity: 'uncommon', fx: { magMul: 1.5 } },
+  stabil:   { name: 'Stabilizer',rarity: 'rare',     fx: { spreadMul: 0.7 } },
+  light:    { name: 'LightFrame',rarity: 'common',   fx: { turnMul: 1.2, moveMul: 1.1 } },
+  plate:    { name: 'HeavyPlate',rarity: 'rare',     fx: { dmgResist: 0.3, moveMul: 0.9 } },
+};
+const EQUIP_IDS = Object.keys(EQUIPMENT);
+const LOOT_EQUIP_IDS = EQUIP_IDS.slice();
+
+// 道具（一次性，戰鬥中按 Q 觸發、用完消失；第一版只做瞬發 + 短時 buff，無拋射/區域）。
+//   heal: 立即補血 / refill: 補滿彈夾+備彈 / buff: { dur, moveMul, fireRateMul }
+const ITEMS = {
+  stim:      { name: 'Stim',       rarity: 'common',   heal: 60 },
+  ammobox:   { name: 'Ammo Box',   rarity: 'common',   refill: true },
+  adrenaline:{ name: 'Adrenaline', rarity: 'uncommon', buff: { dur: 6, moveMul: 1.4, fireRateMul: 1.4 } },
+};
+const ITEM_IDS = Object.keys(ITEMS);
+const LOOT_ITEM_IDS = ITEM_IDS.slice();
+
+/* =====================================================================
+   ARCHETYPES — 待機個性矩陣（策展組合）。每名單位招募時隨機抽一種。
+   facing: HOLD(固定) | SWEEP(掃視) | WANDER(亂飄) | TRACK(轉向看得到的威脅)
+   discipline: TAP(點放：短 burst + 停頓讓 bloom 回復，準/省彈/斷續) | AUTO(扣到底：持續噴，bloom 拉滿，散/耗彈/壓制)
+   tier 為盯哨可靠度(0=☆ 最飄忽 → 3=★★★ 最可靠)，僅用於 UI 名稱顏色提示。
+   ===================================================================== */
+const ARCHETYPES = {
+  rock:       { name: 'Rock',       facing: 'HOLD',   discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 3 },
+  sentinel:   { name: 'Sentinel',   facing: 'SWEEP',  discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 2 },
+  suppressor: { name: 'Suppressor', facing: 'HOLD',   discipline: 'AUTO', fireMode: 'SUPPRESSIVE', tier: 2 },
+  hunter:     { name: 'Hunter',     facing: 'TRACK',  discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 2 },
+  sprayer:    { name: 'Sprayer',    facing: 'SWEEP',  discipline: 'AUTO', fireMode: 'AGGRESSIVE',  tier: 1 },
+  watchdog:   { name: 'Watchdog',   facing: 'TRACK',  discipline: 'AUTO', fireMode: 'DEFENSIVE',   tier: 1 },
+  drifter:    { name: 'Drifter',    facing: 'WANDER', discipline: 'TAP',  fireMode: 'DEFENSIVE',   tier: 0 },
+  twitch:     { name: 'Twitch',     facing: 'WANDER', discipline: 'AUTO', fireMode: 'AGGRESSIVE',  tier: 0 },
+};
+const ARCHETYPE_IDS = Object.keys(ARCHETYPES);
+const TIER_COLOR = ['#ff7d7d', '#e0b050', '#9fd0e0', '#7fffa8']; // 0(☆)→3(★★★)
+
+// 招募隨機（全部都隨機、無固定基準）：名字/色相/感知/武器/個性
+const UNIT_NAMES = ['Guard', 'Sentry', 'Ghost', 'Vanguard', 'Warden', 'Wisp', 'Echo', 'Raven', 'Slate', 'Cinder', 'Marlow', 'Vesper', 'Koda', 'Bishop', 'Reed', 'Tace', 'Lark', 'Nyx'];
+const HUE_POOL = [205, 155, 285, 35, 95, 330, 170, 250, 310, 55, 130];
+const rngPick = (a) => a[Math.floor(Math.random() * a.length)];
+function makeRecruit(used) {
+  let name = rngPick(UNIT_NAMES);
+  if (used) { let g = 0; while (used.has(name) && g++ < 50) name = rngPick(UNIT_NAMES); used.add(name); }
+  return { name, hue: rngPick(HUE_POOL), strength: rngPick([0.8, 1.0, 1.2]),
+    weaponId: rngPick(RECRUIT_WEAPON_IDS), abilityId: 'heal', archetypeId: rngPick(ARCHETYPE_IDS),
+    bonusMaxHp: 0, hp: CONFIG.unitHp, allocatedAmmo: CONFIG.ammo.defaultAlloc, disciplineOverride: null,
+    equipId: null, itemId: null };   // 裝備（持續被動）/ 道具（一次性）各 1 槽，預設空
+}
+
+/* =====================================================================
+   ROADMAP — Slay-the-Spire 式路線圖（目前只有 COMBAT / REST 兩種節點）
+   col=直行(左→右推進)、row=縱向位置；start=第一行可選節點；edges 有向 a→b。
+   戰鬥都綁同一張地圖、休息都同一種；走到無後繼的終點＝RUN COMPLETE。
+   ===================================================================== */
+const ROADMAP = {
+  start: [0, 1],
+  nodes: [
+    { id: 0, col: 0, row: 1, type: 'COMBAT' },                  // map 預設 alpha
+    { id: 1, col: 0, row: 3, type: 'COMBAT', map: 'bravo' },    // 門/掩體圖（開門才見敵）
+    { id: 2, col: 1, row: 0, type: 'ARMORY' },                  // 軍械庫：三選一拿 武器/裝備/技能/道具
+    { id: 3, col: 1, row: 2, type: 'REST' },
+    { id: 4, col: 1, row: 4, type: 'COMBAT' },
+    { id: 5, col: 2, row: 1, type: 'COMBAT' },
+    { id: 6, col: 2, row: 3, type: 'COMBAT', map: 'bravo' },    // 門/掩體圖
+    { id: 7, col: 3, row: 1, type: 'REST' },
+    { id: 8, col: 3, row: 3, type: 'ARMORY' },
+    { id: 9, col: 4, row: 2, type: 'COMBAT', map: 'bravo' },  // 終點＝門禁設施（必經，保證體驗）
+  ],
+  edges: [[0, 2], [0, 3], [1, 3], [1, 4], [2, 5], [3, 5], [3, 6], [4, 6], [5, 7], [5, 8], [6, 8], [7, 9], [8, 9]],
+};
+const roadAdj = {};
+for (const n of ROADMAP.nodes) roadAdj[n.id] = [];
+for (const [a, b] of ROADMAP.edges) roadAdj[a].push(b);
+const roadNode = (id) => ROADMAP.nodes.find(n => n.id === id);
+const roadMaxCol = Math.max(...ROADMAP.nodes.map(n => n.col));
+const roadNodePos = (n) => ({ x: 130 + n.col * ((1280 - 260) / roadMaxCol), y: 150 + n.row * 92 });
+
+/* =====================================================================
+   Math — 向量 / 角度 / 幾何
+   ===================================================================== */
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const angTo = (a, b) => Math.atan2(b.y - a.y, b.x - a.x);
+function angDiff(a, b) { let d = a - b; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return d; }
+function rotToward(cur, target, maxStep) { const d = angDiff(target, cur); if (Math.abs(d) <= maxStep) return target; return cur + Math.sign(d) * maxStep; }
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function segIntersect(a, b, c, d) {
+  const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+  const rxs = rx * sy - ry * sx;
+  if (Math.abs(rxs) < 1e-9) return false;
+  const qpx = c.x - a.x, qpy = c.y - a.y;
+  const t = (qpx * sy - qpy * sx) / rxs;
+  const u = (qpx * ry - qpy * rx) / rxs;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+function closestOnSeg(p, a, b) {
+  const abx = b.x - a.x, aby = b.y - a.y;
+  const len2 = abx * abx + aby * aby || 1;
+  const t = clamp(((p.x - a.x) * abx + (p.y - a.y) * aby) / len2, 0, 1);
+  return { x: a.x + abx * t, y: a.y + aby * t };
+}
+function segCircle(a, b, c, r) { const cp = closestOnSeg(c, a, b); return dist(cp, c) < r; }
+
+// 射線 origin + dir·t 與線段 a-b 的最近正向 t（無交回傳 null）
+function raySegT(o, d, a, b) {
+  const rx = d.x, ry = d.y, sx = b.x - a.x, sy = b.y - a.y;
+  const rxs = rx * sy - ry * sx;
+  if (Math.abs(rxs) < 1e-9) return null;
+  const qpx = a.x - o.x, qpy = a.y - o.y;
+  const t = (qpx * sy - qpy * sx) / rxs;
+  const u = (qpx * ry - qpy * rx) / rxs;
+  if (t >= 0 && u >= 0 && u <= 1) return t;
+  return null;
+}
+// 射線打到最近牆面的落點
+function rayHit(o, ang, maxLen) {
+  const d = { x: Math.cos(ang), y: Math.sin(ang) };
+  let best = maxLen;
+  for (const w of MAP.walls) {
+    const t = raySegT(o, d, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 });
+    if (t != null && t < best) best = t;
+  }
+  for (const dr of MAP.doors) {           // 關閉的門也截斷視錐（低矮牆不擋視線）
+    if (dr.open) continue;
+    const t = raySegT(o, d, { x: dr.x1, y: dr.y1 }, { x: dr.x2, y: dr.y2 });
+    if (t != null && t < best) best = t;
+  }
+  return { x: o.x + d.x * best, y: o.y + d.y * best };
+}
+
+/* =====================================================================
+   Map — 手刻地圖
+   ===================================================================== */
+const WORLD = { w: 1280, h: 720 };
+function rectWalls(x1, y1, x2, y2) {
+  return [
+    { x1, y1, x2, y2: y1 }, { x1: x2, y1, x2, y2 },
+    { x1: x2, y1: y2, x2: x1, y2 }, { x1, y1: y2, x2: x1, y2: y1 },
+  ];
+}
+// 兩張戰鬥地圖（registry）。alpha＝原圖；bravo＝門+按鈕+低矮牆，敵人預設閒置藏在門後（開門才現形）。
+const MAPS = {
+  alpha: {
+    label: '開闊區',
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 },
+      { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 },
+      { x1: 40, y1: 680, x2: 40, y2: 40 },
+      { x1: 640, y1: 40, x2: 640, y2: 320 },     // choke 上
+      { x1: 640, y1: 400, x2: 640, y2: 680 },    // choke 下（缺口 y320~400）
+      ...rectWalls(270, 310, 330, 410),          // 左掩體
+      ...rectWalls(860, 240, 920, 320),          // 右上掩體
+      ...rectWalls(860, 400, 920, 480),          // 右下掩體
+    ],
+    doors: [], lowWalls: [], buttons: [],
+    waypoints: [
+      { id: 0,  pos: { x: 150,  y: 360 }, tags: ['patrol', 'spawn'] },
+      { id: 1,  pos: { x: 390,  y: 200 }, tags: ['cover'] },
+      { id: 2,  pos: { x: 390,  y: 520 }, tags: ['cover'] },
+      { id: 3,  pos: { x: 560,  y: 360 }, tags: ['choke'] },
+      { id: 4,  pos: { x: 720,  y: 360 }, tags: ['choke'] },
+      { id: 5,  pos: { x: 780,  y: 200 }, tags: ['rush'] },
+      { id: 6,  pos: { x: 780,  y: 520 }, tags: ['rush'] },
+      { id: 7,  pos: { x: 960,  y: 200 }, tags: ['flank', 'vantage'] },
+      { id: 8,  pos: { x: 960,  y: 520 }, tags: ['flank', 'vantage'] },
+      { id: 9,  pos: { x: 1000, y: 360 }, tags: ['vantage', 'cover'] },
+      { id: 10, pos: { x: 1180, y: 360 }, tags: ['patrol'] },
+    ],
+    edges: [
+      [0, 1], [0, 2], [1, 3], [2, 3], [3, 4],
+      [4, 5], [4, 6], [4, 9], [5, 7], [6, 8], [7, 9], [8, 9], [9, 10],
+    ],
+    entryPoints: [{ x: 110, y: 360 }],
+    extractionPoints: [{ x: 1190, y: 360 }],
+    enemySpawns: [
+      { nodeId: 4, personality: 'rusher'  },
+      { nodeId: 5, personality: 'flanker' },
+      { nodeId: 8, personality: 'flanker' },
+      { nodeId: 9, personality: 'rusher'  },
+    ],
+  },
+  // bravo：3 區（兩道隔牆，缺口各一扇門）。中段藏閒置敵人＋低矮牆掩體；按鈕 b1 遠端開 door2 通往撤離。
+  bravo: {
+    label: '門禁設施',
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 },
+      { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 },
+      { x1: 40, y1: 680, x2: 40, y2: 40 },
+      { x1: 460, y1: 40, x2: 460, y2: 300 },     // 隔牆1 上（缺口 y300~420＝door1）
+      { x1: 460, y1: 420, x2: 460, y2: 680 },    // 隔牆1 下
+      { x1: 820, y1: 40, x2: 820, y2: 300 },     // 隔牆2 上（缺口 y300~420＝door2）
+      { x1: 820, y1: 420, x2: 820, y2: 680 },    // 隔牆2 下
+    ],
+    doors: [
+      { id: 'd1', x1: 460, y1: 300, x2: 460, y2: 420, open: false },
+      { id: 'd2', x1: 820, y1: 300, x2: 820, y2: 420, open: false },
+    ],
+    // 低矮牆＝掩體：lw1 中央(敵人邊繞過、玩家可越)；lw2 右區純掩體
+    lowWalls: [
+      { x1: 600, y1: 360, x2: 700, y2: 360 },
+      { x1: 1000, y1: 420, x2: 1000, y2: 520 },
+    ],
+    buttons: [
+      { id: 'b1', x: 640, y: 150, doorId: 'd2' },  // 中段按鈕：遠端開 door2（通往撤離）
+    ],
+    waypoints: [
+      { id: 0, pos: { x: 150,  y: 360 }, tags: ['patrol', 'spawn'] },  // 左區（玩家進場側）
+      { id: 1, pos: { x: 360,  y: 360 }, tags: ['patrol'] },           // 左區近 door1
+      { id: 2, pos: { x: 560,  y: 360 }, tags: ['choke'] },            // 中段 door1 後
+      { id: 3, pos: { x: 640,  y: 200 }, tags: ['cover', 'flank'] },   // 中段上（繞低矮牆）
+      { id: 4, pos: { x: 640,  y: 520 }, tags: ['cover', 'flank'] },   // 中段下（繞低矮牆）
+      { id: 5, pos: { x: 740,  y: 360 }, tags: ['choke'] },            // 中段近 door2
+      { id: 6, pos: { x: 940,  y: 360 }, tags: ['vantage'] },          // 右區 door2 後
+      { id: 7, pos: { x: 1180, y: 360 }, tags: ['patrol'] },           // 右區近撤離
+    ],
+    edges: [
+      [0, 1], [1, 2], [2, 3], [2, 4], [3, 5], [4, 5], [5, 6], [6, 7],
+    ],
+    entryPoints: [{ x: 110, y: 360 }],
+    extractionPoints: [{ x: 1190, y: 360 }],
+    enemySpawns: [
+      { nodeId: 2, personality: 'flanker' },   // 門後（閒置、面向 door1）
+      { nodeId: 3, personality: 'rusher'  },
+      { nodeId: 4, personality: 'rusher'  },
+      { nodeId: 6, personality: 'flanker' },   // 右區（door2 後）
+    ],
+    prisoners: [{ x: 980, y: 480 }],           // 右區門後的俘虜（救出並撤離→入隊）
+  },
+};
+
+let MAP = MAPS.alpha;        // 目前作用中的戰鬥地圖（startMission 依節點切換）
+const MAXD = Math.hypot(WORLD.w, WORLD.h);
+let EXTRACT, ENTRY, N, adj, nodeVis, extractNodeId, nextHop;
+const wp = (id) => MAP.waypoints[id];
+
+/* =====================================================================
+   LoS / Vision — 牆面射線 + 節點可見度表 + 感知 canSee()
+   （視線/子彈會被「永久牆 + 關閉的門」截斷；低矮牆矮、不擋視線）
+   ===================================================================== */
+function segBlocked(a, b) {
+  for (const w of MAP.walls) if (segIntersect(a, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 })) return true;
+  for (const d of MAP.doors) if (!d.open && segIntersect(a, b, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 })) return true;
+  return false;
+}
+const clearLine = (a, b) => !segBlocked(a, b);
+// 只看永久牆（門/低矮牆不算）——給節點可見度表，與門開關狀態無關、保持穩定
+function clearLineWalls(a, b) {
+  for (const w of MAP.walls) if (segIntersect(a, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 })) return false;
+  return true;
+}
+
+function nearestNode(pos, requireLoS = false) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < N; i++) {
+    if (requireLoS && !clearLine(pos, wp(i).pos)) continue;
+    const d = dist(pos, wp(i).pos);
+    if (d < bd) { bd = d; best = i; }
+  }
+  if (best < 0) return nearestNode(pos, false);
+  return best;
+}
+function buildNextHop() {
+  const arr = new Array(N).fill(null);
+  const d = new Array(N).fill(Infinity);
+  const q = [extractNodeId]; d[extractNodeId] = 0;
+  while (q.length) { const c = q.shift(); for (const nb of adj[c]) if (d[nb] === Infinity) { d[nb] = d[c] + 1; q.push(nb); } }
+  for (let n = 0; n < N; n++) {
+    if (n === extractNodeId) { arr[n] = n; continue; }
+    let best = null, bd = d[n];
+    for (const nb of adj[n]) if (d[nb] < bd) { bd = d[nb]; best = nb; }
+    arr[n] = best != null ? best : n;
+  }
+  return arr;
+}
+// 切換作用中地圖並重建衍生表（N/adj/nodeVis/nextHop/EXTRACT/ENTRY/extractNodeId）
+function buildMapDerived(key) {
+  MAP = MAPS[key] || MAPS.alpha;
+  EXTRACT = MAP.extractionPoints[0]; ENTRY = MAP.entryPoints[0];
+  N = MAP.waypoints.length;
+  adj = Array.from({ length: N }, () => []);
+  for (const [a, b] of MAP.edges) { adj[a].push(b); adj[b].push(a); }
+  nodeVis = Array.from({ length: N }, () => new Array(N).fill(false));
+  for (let i = 0; i < N; i++) { nodeVis[i][i] = true; for (let j = i + 1; j < N; j++) { const v = clearLineWalls(wp(i).pos, wp(j).pos); nodeVis[i][j] = v; nodeVis[j][i] = v; } }
+  extractNodeId = nearestNode(EXTRACT, false);
+  nextHop = buildNextHop();
+}
+buildMapDerived('alpha');   // 載入時先建好預設圖，讓全域衍生值存在
+
+// 感知模型（敵我共用）：有視線，且（近身內 360° 或 前方 90° 視錐內）。視錐距離無限，靠牆截斷。
+function canSee(observer, targetPos) {
+  if (!clearLine(observer.pos, targetPos)) return false;
+  if (dist(observer.pos, targetPos) <= observer.senseRadius) return true;
+  const half = CONFIG.vision.coneHalfDeg * Math.PI / 180;
+  return Math.abs(angDiff(angTo(observer.pos, targetPos), observer.facing)) <= half;
+}
+function isRevealed(enemy) { return activePlayers().some(p => canSee(p, enemy.pos)); }
+
+/* =====================================================================
+   Camera — 旋轉視角（跟隨置中被附身單位、使其朝上）
+   ===================================================================== */
+let cam, camTarget;
+function initCamera(f) {
+  cam = { x: f.pos.x, y: f.pos.y, angle: -Math.PI / 2 - f.facing, scale: CONFIG.camera.scale };
+  camTarget = { x: cam.x, y: cam.y, angle: cam.angle };
+}
+function updateCamera(dt) {
+  if (!cam) return;   // 安全防護：非戰鬥場景 cam 可能尚未建立
+  if (controlledId != null && players[controlledId].state === 'CONTROLLED') {
+    const f = players[controlledId];
+    camTarget.x = f.pos.x; camTarget.y = f.pos.y;
+    camTarget.angle = -Math.PI / 2 - f.facing;   // facing → 螢幕上方
+  } else if (followExtractId != null) {
+    const u = players[followExtractId];
+    if (u && u.state === 'EXTRACTING') { camTarget.x = u.pos.x; camTarget.y = u.pos.y; camTarget.angle = -Math.PI / 2 - u.facing; } // 續跟位置與移動朝向
+    else followExtractId = null;                  // 已撤出/陣亡 → 結束跟隨，鏡頭定住
+  }
+  const kp = 1 - Math.exp(-CONFIG.camera.followLerp * dt);
+  const ka = 1 - Math.exp(-CONFIG.camera.rotateLerp * dt);
+  cam.x += (camTarget.x - cam.x) * kp;
+  cam.y += (camTarget.y - cam.y) * kp;
+  cam.angle += angDiff(camTarget.angle, cam.angle) * ka;
+  cam.scale = CONFIG.camera.scale;
+}
+function w2s(p) {
+  const ux = p.x - cam.x, uy = p.y - cam.y, c = Math.cos(cam.angle), s = Math.sin(cam.angle);
+  return { x: cv.width / 2 + (ux * c - uy * s) * cam.scale, y: cv.height * CONFIG.camera.anchorY + (ux * s + uy * c) * cam.scale };
+}
+
+/* =====================================================================
+   State
+   ===================================================================== */
+let players, enemies, bullets, particles;
+let controlledId, reservations, enemyIdSeq;
+let simTime, reinforceTimer, extractedCount, deadCount;
+let result;
+let scene = 'MAP';           // 場景：MAP | COMBAT | REST | RUNEND | RUNWIN | EDITOR
+let curTimeBudget = 90;      // 本場軟計時上限（節點 > 地圖 > 全域預設）
+let forcedMap = null;        // 非 null 時 startMission 強制用此地圖鍵（關卡編輯器試玩用）
+let fromEditor = false;      // 此場戰鬥由編輯器試玩啟動（結束時返回 EDITOR 而非路線圖）
+let edit = null;             // 編輯中的地圖（同 MAPS 結構；waypoints id===index）
+let editTool = 'wall', editDrag = null, editSelWp = null, editTagBrush = 'patrol', editSnap = 20, editMsg = '', editRects = [];
+let roster;                  // 跨關攜帶的陣容（撤出者存活、陣亡者損失）
+let missionIndex;            // 已清的戰鬥數（用於難度遞增/HUD）
+let restMsg, lastSummary;    // 休息關狀態
+let warehouse;               // 共用倉庫：未裝備物品 [{kind:'weapon'|'ability', id}]（有上限）
+let backpack;                // 臨時背包：任務中撿到、待休息關處理 [{kind, id, ammo}]（無上限、任務中不可動用）
+let ammoStock;               // 共用彈藥儲備 {weaponId: number}（按武器類別）
+let drops;                   // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
+let prisoners;               // 戰鬥中的俘虜 [{pos, freed}]（E 釋放→加入我方，撤離成功才入隊）
+let restPhase;               // 休息關流程：CHOICE | OFFERS | TARGET | DONE
+let restOffers, restPick, restPendingUpgrade;  // 搜刮抽選 / 已選 / 待指定目標的升級
+let restSel = null;          // 管理介面：選取中的物品 {type:'wh'|'mw'|'ma', idx/mi}
+let restRects = [];          // 休息關/軍械庫可點擊區域（每幀於 draw 重建）
+let armoryOffers = null;     // 軍械庫節點的三選一
+let roadCompleted, roadAvailable, roadCurrent;  // 路線圖狀態
+let hysteresisOn = true, debugView = false, lastSwitchT;
+let aimDir = 0;              // 砲塔目標朝向（世界角，由滑鼠位移累積）
+let pointerLocked = false;  // 是否已鎖定滑鼠（FPS 式瞄準）
+let followExtractId = null;  // 按 F 撤離後，鏡頭續跟的撤離單位（直到按下任一非換人鍵）
+
+function makePlayer(i, cfg, pos) {
+  const W = WEAPONS[cfg.weaponId];
+  const ab = ABILITIES[cfg.abilityId];
+  const arch = ARCHETYPES[cfg.archetypeId];
+  const fx = (cfg.equipId && EQUIPMENT[cfg.equipId]) ? EQUIPMENT[cfg.equipId].fx : {};   // 裝備持續被動
+  const maxHp = CONFIG.unitHp + (cfg.bonusMaxHp || 0) + (fx.maxHpAdd || 0);
+  // 跨關回復：以攜帶的當前血量為底，回復「缺口 × interMissionHealFrac」（frac=1 → 滿血，與舊行為一致）
+  const carried = clamp(cfg.hp != null ? cfg.hp : maxHp, 0, maxHp);
+  const startHp = clamp(Math.round(carried + (maxHp - carried) * CONFIG.interMissionHealFrac), 1, maxHp);
+  const disc = cfg.disciplineOverride || arch.discipline;  // 搜刮可把某員紀律提升為 TAP（per-member 覆蓋）
+  // 彈藥備量＝休息關分配的量（底線武器無限）
+  const reserve = isInfiniteAmmo(cfg.weaponId) ? 9999 : (cfg.allocatedAmmo != null ? cfg.allocatedAmmo : CONFIG.ammo.defaultAlloc);
+  const magazine = Math.round(W.magazine * (fx.magMul || 1));   // 裝備可改彈夾容量
+  return {
+    id: i, name: cfg.name, faction: 'player', hue: cfg.hue, strength: cfg.strength || 1,
+    pos: { x: pos.x, y: pos.y }, facing: 0, radius: CONFIG.unitRadius,
+    hp: startHp, maxHp,
+    state: i === 0 ? 'CONTROLLED' : 'IDLE',
+    archetypeId: cfg.archetypeId, archetype: arch, disciplineOverride: cfg.disciplineOverride || null,
+    idleStrategy: { fireMode: arch.fireMode, targeting: 'NEAREST_IN_LOS', facing: arch.facing, discipline: disc, moveOnIdle: false },
+    weaponId: cfg.weaponId, weapon: W, magazine, ammoInMag: magazine, ammoReserve: reserve, reloadT: 0, reloadDur: 0, bloom: 0,
+    abilityId: cfg.abilityId, ability: ab, abilityCd: 0,
+    equipId: cfg.equipId || null, itemId: cfg.itemId || null, itemUsed: false,   // 裝備槽 / 道具槽
+    dmgResist: fx.dmgResist || 0, reloadMul: fx.reloadMul || 1, spreadMul: fx.spreadMul || 1,
+    turnSpeed: W.turnSpeed * (fx.turnMul || 1), moveMul: fx.moveMul || 1,
+    buffT: 0, buffMove: 1, buffFire: 1,    // 道具（腎上腺素）短時 buff
+    senseRadius: CONFIG.vision.senseRadius * (cfg.strength || 1) * (fx.senseMul || 1),
+    fireCooldown: 0, engageTimer: 0, alertTimer: 0, muzzle: 0, sprinting: false,
+    idleAnchor: 0, sweepPhase: 0, sweepDir: 1, extractNode: null,   // idleAnchor＝進入閒置時的正前方
+    burstLeft: CONFIG.idleTap.size, burstCd: 0, wanderTarget: 0, wanderTimer: 0,
+  };
+}
+function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.PI) {
+  const W = WEAPONS.carbine;   // 敵人持 carbine（已入目錄、可掉落/撿取）
+  return {
+    id: enemyIdSeq++, faction: 'enemy', dead: false, weaponId: 'carbine',
+    pos: { x: wp(nodeId).pos.x, y: wp(nodeId).pos.y }, facing, radius: CONFIG.unitRadius,
+    hp: CONFIG.enemy.hp, maxHp: CONFIG.enemy.hp,
+    state: 'IDLE',   // 純狀態機：IDLE(守點被動) → ENGAGED(latch、看到/聽到/被打→永不取消)
+    personalityName, personality: CONFIG.ai[personalityName],
+    weapon: W, ammoInMag: W.magazine, ammoReserve: 9999, reloadT: 0, bloom: 0,
+    senseRadius: CONFIG.vision.senseRadius * CONFIG.enemy.strength,
+    currentNode: nodeId, targetNode: nodeId, reservedNode: null,
+    fireCooldown: 0, engageTimer: 0, muzzle: 0, isReinforce, watchFacing: facing,
+  };
+}
+// 跨關陣容工具
+const baseRoster = () => { const used = new Set(); return Array.from({ length: CONFIG.squadSize }, () => makeRecruit(used)); };
+const rosterFromPlayer = (p) => {
+  const eqAdd = (p.equipId && EQUIPMENT[p.equipId] && EQUIPMENT[p.equipId].fx.maxHpAdd) || 0;  // 裝備加的 maxHp 不算進 bonusMaxHp
+  return { name: p.name, hue: p.hue, strength: p.strength, weaponId: p.weaponId, abilityId: p.abilityId, archetypeId: p.archetypeId, bonusMaxHp: p.maxHp - CONFIG.unitHp - eqAdd, hp: p.hp, allocatedAmmo: isInfiniteAmmo(p.weaponId) ? CONFIG.ammo.defaultAlloc : p.ammoReserve, disciplineOverride: p.disciplineOverride || null, equipId: p.equipId || null, itemId: p.itemUsed ? null : (p.itemId || null) };
+};
+function spawnPos(i, n) { return { x: 180, y: clamp(360 - (n - 1) * 18 + i * 36, 70, 650) }; }
+function releasePointer() { if (document.exitPointerLock) document.exitPointerLock(); }
+
+// 開新的一輪 run（從基礎陣容起，先進路線圖）
+function initRun() {
+  roster = baseRoster(); missionIndex = 0;
+  warehouse = []; backpack = []; drops = [];
+  ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = CONFIG.ammo.stockStart;  // 共用彈藥儲備（寬裕）
+  restSel = null;
+  roadCompleted = new Set(); roadCurrent = null; roadAvailable = ROADMAP.start.slice();
+  result = null; lastSummary = null; scene = 'MAP';
+}
+
+// 在路線圖選擇一個可前往的節點
+function selectNode(id) {
+  if (!roadAvailable.includes(id) || roadCompleted.has(id)) return;
+  roadCurrent = id;
+  const t = roadNode(id).type;
+  if (t === 'COMBAT') startMission();
+  else if (t === 'ARMORY') enterArmory();
+  else enterRest();
+}
+
+// 完成目前節點 → 回路線圖開放後繼節點；無後繼＝走完路線
+function advanceNode() {
+  if (roadCurrent != null) roadCompleted.add(roadCurrent);
+  const succ = roadCurrent != null ? roadAdj[roadCurrent] : [];
+  if (!succ || succ.length === 0) scene = 'RUNWIN';
+  else { roadAvailable = succ.slice(); scene = 'MAP'; }
+  releasePointer();
+}
+
+// 開始一場戰鬥（用目前 roster 重建單位、重置敵人/計時）
+function startMission() {
+  const mapKey = forcedMap || (roadCurrent != null && roadNode(roadCurrent).map) || 'alpha';
+  buildMapDerived(mapKey);                       // 切換到此節點指定的戰鬥地圖（重建衍生表）
+  const nodeTB = (roadCurrent != null && roadNode(roadCurrent).timeBudget);
+  curTimeBudget = nodeTB || MAP.timeBudget || CONFIG.timeBudget;   // 各關時間：節點 > 地圖 > 全域
+  for (const d of MAP.doors) d.open = false;     // 每場戰鬥門重置為關閉
+  players = roster.map((r, i) => makePlayer(i, r, spawnPos(i, roster.length)));
+  controlledId = 0;
+  enemies = []; bullets = []; particles = [];
+  reservations = new Map(); enemyIdSeq = 1; drops = [];
+  prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
+  for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing); enemies.push(e); commitReservation(e, e.currentNode); }
+  // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
+  for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }
+  simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
+  extractedCount = 0; deadCount = 0; result = null; followExtractId = null;
+  scene = 'COMBAT';
+  aimDir = players[controlledId].facing;
+  initCamera(players[controlledId]);
+}
+
+// 戰鬥結算：撤出者帶入後續（→回路線圖）；0 撤出則 run 結束
+function endMission() {
+  if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
+  const survivors = players.filter(p => p.state === 'EXTRACTED');
+  lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name) };
+  if (survivors.length >= 1) { roster = survivors.map(rosterFromPlayer); missionIndex++; advanceNode(); }
+  else { scene = 'RUNEND'; result = 'LOSE'; releasePointer(); }
+}
+
+/* =====================================================================
+   休息關 meta 流程：共用倉庫(有上限) + 臨時背包整理 + 二選一(搜刮/喚醒) + 配裝/彈藥分配
+   restPhase: CHOICE(可整理) → OFFERS(搜刮三選一) / TARGET(指定升級對象) → DONE(可整理→繼續)
+   ===================================================================== */
+const RARITY_WEIGHT = { common: 60, uncommon: 25, rare: 12, epic: 4, legendary: 1 };
+const weaponValue = (W) => W.damage * W.fireRate * (W.range / 400);   // 粗略估值（自動配裝用）
+function weightedPick(ids, weightOf) { const w = ids.map(weightOf); const tot = w.reduce((a, b) => a + b, 0); let r = Math.random() * tot; for (let i = 0; i < ids.length; i++) { r -= w[i]; if (r <= 0) return ids[i]; } return ids[ids.length - 1]; }
+const rollLootWeapon = () => weightedPick(LOOT_WEAPON_IDS, id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
+
+// --- 倉庫容量 ---
+const warehouseCap = () => roster.length * CONFIG.loadout.slotsPerMember;
+const warehouseUsed = () => CONFIG.loadout.abilitiesCountTowardCap ? warehouse.length : warehouse.filter(it => it.kind === 'weapon').length;
+const overCap = () => warehouseUsed() > warehouseCap();
+
+// --- 軍械庫節點：三選一拿 武器/裝備/技能/道具 → 倉庫 → 回路線圖（不進戰鬥、不耗時）---
+function enterArmory() { scene = 'ARMORY'; releasePointer(); armoryOffers = rollArmory(CONFIG.loadout.scavengeChoices); }
+function rollArmory(n) {
+  const weapon = () => { const id = rollLootWeapon(), W = WEAPONS[id]; return { type: 'weapon', id, label: `武器 · ${W.name}（${W.rarity}）`, color: rarityColor(W.rarity) }; };
+  const equipO = () => { const id = rngPick(LOOT_EQUIP_IDS), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}）`, color: '#9fd0e0' }; };
+  const ability = () => { const id = rngPick(LOOT_ABILITY_IDS), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}`, color: '#c0a0ff' }; };
+  const itemO = () => { const id = rngPick(LOOT_ITEM_IDS), I = ITEMS[id]; return { type: 'item', id, label: `道具 · ${I.name}`, color: '#ffd27d' }; };
+  const gens = [weapon, equipO, ability, itemO];
+  const offers = []; while (offers.length < n) offers.push(rngPick(gens)());
+  return offers;
+}
+function armoryPick(i) {
+  if (scene !== 'ARMORY' || !armoryOffers || i < 0 || i >= armoryOffers.length) return;
+  const o = armoryOffers[i]; warehouse.push({ kind: o.type, id: o.id }); armoryOffers = null; advanceNode();
+}
+
+// --- 進入休息關：整理臨時背包（彈藥折算進儲備、item 進倉庫 haul）---
+function enterRest() {
+  scene = 'REST'; releasePointer();
+  restPhase = 'CHOICE'; restOffers = null; restPick = null; restPendingUpgrade = null; restSel = null; restMsg = '';
+  for (const it of backpack) {
+    if (it.kind === 'weapon') { if (!isInfiniteAmmo(it.id)) ammoStock[it.id] = (ammoStock[it.id] || 0) + (it.ammo || 0); warehouse.push({ kind: 'weapon', id: it.id }); }
+    else if (it.kind === 'ability') warehouse.push({ kind: 'ability', id: it.id });
+  }
+  backpack = [];
+}
+
+// --- 搜刮：隨機三選一（地板保證至少一個基本補給；天花板可出稀有武器/技能/質升級）---
+function rollScavenge(n) {
+  const supply = () => { const amt = 200; return { type: 'supply', amt, label: `補給 · 全武器類彈藥 +${amt}`, color: '#8fd0ff' }; };
+  const maxhp = () => { const amt = 20; return { type: 'maxhp', amt, label: `療養 · 全隊 +${amt} maxHP`, color: '#7fffa8' }; };
+  const weapon = () => { const id = rollLootWeapon(), W = WEAPONS[id]; return { type: 'weapon', id, label: `武器 · ${W.name}（${W.rarity}）→ 倉庫`, color: rarityColor(W.rarity) }; };
+  const ability = () => { const id = rngPick(LOOT_ABILITY_IDS), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}（+${A.heal}/CD${A.cooldown}s）→ 倉庫`, color: '#c0a0ff' }; };
+  const equipO = () => { const id = rngPick(LOOT_EQUIP_IDS), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}，持續被動）→ 倉庫`, color: '#9fd0e0' }; };
+  const itemO = () => { const id = rngPick(LOOT_ITEM_IDS), I = ITEMS[id]; return { type: 'item', id, label: `道具 · ${I.name}（一次性）→ 倉庫`, color: '#ffd27d' }; };
+  const persona = () => ({ type: 'personality', label: '訓練 · 提升某員待機個性一級（指定成員）', color: '#ffd27d', needTarget: true });
+  const discip = () => ({ type: 'discipline', label: '紀律 · 某員待機改點放 TAP（指定成員）', color: '#ffd27d', needTarget: true });
+  const gens = [supply, maxhp, weapon, weapon, ability, equipO, itemO, persona, discip];
+  const offers = [supply()];                       // 地板保證：基本補給
+  while (offers.length < n) offers.push(rngPick(gens)());
+  return offers;
+}
+function restDoScavenge() { if (restPhase !== 'CHOICE') return; restOffers = rollScavenge(CONFIG.loadout.scavengeChoices); restPhase = 'OFFERS'; }
+function pickOffer(i) {
+  if (restPhase !== 'OFFERS' || !restOffers || i < 0 || i >= restOffers.length) return;
+  const o = restOffers[i]; restPick = o;
+  if (o.needTarget) { restPendingUpgrade = o; restPhase = 'TARGET'; restMsg = ''; return; }
+  applyOffer(o, -1); restPhase = 'DONE';
+}
+function applyTarget(mi) {
+  if (restPhase !== 'TARGET' || !restPendingUpgrade || mi < 0 || mi >= roster.length) return;
+  applyOffer(restPendingUpgrade, mi); restPendingUpgrade = null; restPhase = 'DONE';
+}
+function applyOffer(o, mi) {
+  if (o.type === 'supply') { for (const id of WEAPON_IDS) if (!isInfiniteAmmo(id)) ammoStock[id] += o.amt; restMsg = `搜刮：全武器類彈藥 +${o.amt}`; }
+  else if (o.type === 'maxhp') { for (const r of roster) r.bonusMaxHp = (r.bonusMaxHp || 0) + o.amt; restMsg = `搜刮：全隊 +${o.amt} maxHP`; }
+  else if (o.type === 'weapon') { warehouse.push({ kind: 'weapon', id: o.id }); restMsg = `搜刮：${WEAPONS[o.id].name} 入倉庫`; }
+  else if (o.type === 'ability') { warehouse.push({ kind: 'ability', id: o.id }); restMsg = `搜刮：${ABILITIES[o.id].name} 入倉庫`; }
+  else if (o.type === 'equip') { warehouse.push({ kind: 'equip', id: o.id }); restMsg = `搜刮：${EQUIPMENT[o.id].name} 入倉庫`; }
+  else if (o.type === 'item') { warehouse.push({ kind: 'item', id: o.id }); restMsg = `搜刮：${ITEMS[o.id].name} 入倉庫`; }
+  else if (o.type === 'personality') { const r = roster[mi], tgt = Math.min(3, ARCHETYPES[r.archetypeId].tier + 1); const pool = ARCHETYPE_IDS.filter(id => ARCHETYPES[id].tier === tgt && id !== r.archetypeId); if (pool.length) { r.archetypeId = rngPick(pool); r.disciplineOverride = null; } restMsg = `${r.name} 個性提升為 ${ARCHETYPES[r.archetypeId].name}`; }
+  else if (o.type === 'discipline') { roster[mi].disciplineOverride = 'TAP'; restMsg = `${roster[mi].name} 待機改為點放 TAP`; }
+}
+
+// --- 喚醒：必須先把倉庫整理到 ≤ 當前上限（§5），再 +1 隊員（容量 +slotsPerMember）---
+function restDoAwaken() {
+  if (restPhase !== 'CHOICE' || overCap()) return;
+  const rec = makeRecruit(new Set(roster.map(r => r.name)));
+  autoEquipFromWarehouse(rec);                     // 從已整理倉庫配裝；無更好者保留手邊武器（§4/§7）
+  roster.push(rec);
+  restMsg = `喚醒 ${rec.name}（${ARCHETYPES[rec.archetypeId].name}）入隊`;
+  restPhase = 'DONE';
+}
+function autoEquipFromWarehouse(rec) {
+  let bestIdx = -1, bestVal = weaponValue(WEAPONS[rec.weaponId]);
+  warehouse.forEach((it, idx) => { if (it.kind === 'weapon') { const v = weaponValue(WEAPONS[it.id]); if (v > bestVal) { bestVal = v; bestIdx = idx; } } });
+  if (bestIdx >= 0) { rec.weaponId = warehouse[bestIdx].id; warehouse.splice(bestIdx, 1); rec.allocatedAmmo = 0; }
+}
+
+function restDoContinue() { if (restPhase !== 'DONE' || overCap()) return; restSel = null; advanceNode(); }
+
+// --- 配裝/彈藥管理（CHOICE 與 DONE 階段皆可操作）---
+function setMemberWeapon(mi, newId) {
+  const r = roster[mi], oldId = r.weaponId;
+  if (oldId !== newId) { if (!isInfiniteAmmo(oldId)) ammoStock[oldId] = (ammoStock[oldId] || 0) + (r.allocatedAmmo || 0); r.allocatedAmmo = 0; }
+  r.weaponId = newId;
+}
+function equipWeaponFromWarehouse(whIdx, mi) {
+  const it = warehouse[whIdx]; if (!it || it.kind !== 'weapon') return;
+  const oldId = roster[mi].weaponId; warehouse.splice(whIdx, 1); setMemberWeapon(mi, it.id);
+  if (!isInfiniteAmmo(oldId)) warehouse.push({ kind: 'weapon', id: oldId });   // 底線武器換下即消失
+  restSel = null;
+}
+function unequipWeapon(mi) { const oldId = roster[mi].weaponId; if (isInfiniteAmmo(oldId)) return; setMemberWeapon(mi, FLOOR_WEAPON); warehouse.push({ kind: 'weapon', id: oldId }); }
+function equipAbilityFromWarehouse(whIdx, mi) {
+  const it = warehouse[whIdx]; if (!it || it.kind !== 'ability') return;
+  const oldId = roster[mi].abilityId; warehouse.splice(whIdx, 1); roster[mi].abilityId = it.id;
+  if (oldId) warehouse.push({ kind: 'ability', id: oldId }); restSel = null;
+}
+function unequipAbility(mi) { const oldId = roster[mi].abilityId; if (!oldId) return; roster[mi].abilityId = null; warehouse.push({ kind: 'ability', id: oldId }); }
+// 通用裝備/道具槽（kind 'equip'→field 'equipId'；kind 'item'→field 'itemId'）
+function equipGearFromWarehouse(whIdx, mi, kind, field) {
+  const it = warehouse[whIdx]; if (!it || it.kind !== kind) return;
+  const oldId = roster[mi][field]; warehouse.splice(whIdx, 1); roster[mi][field] = it.id;
+  if (oldId) warehouse.push({ kind, id: oldId }); restSel = null;
+}
+function unequipGear(mi, kind, field) { const oldId = roster[mi][field]; if (!oldId) return; roster[mi][field] = null; warehouse.push({ kind, id: oldId }); }
+function discardWarehouse(whIdx) { if (whIdx >= 0 && whIdx < warehouse.length) warehouse.splice(whIdx, 1); restSel = null; }
+function allocAmmo(mi, dir) {
+  const r = roster[mi]; if (isInfiniteAmmo(r.weaponId)) return;
+  const type = r.weaponId, step = WEAPONS[type].magazine;
+  if (dir > 0) { const take = Math.min(step, ammoStock[type] || 0); r.allocatedAmmo = (r.allocatedAmmo || 0) + take; ammoStock[type] -= take; }
+  else { const give = Math.min(step, r.allocatedAmmo || 0); r.allocatedAmmo -= give; ammoStock[type] = (ammoStock[type] || 0) + give; }
+}
+
+/* =====================================================================
+   Possession
+   ===================================================================== */
+const activePlayers = () => players.filter(p => p.state === 'CONTROLLED' || p.state === 'IDLE' || p.state === 'EXTRACTING');
+
+function possess(i) {
+  const u = players[i];
+  if (!u || u.state === 'DEAD' || u.state === 'EXTRACTED') return;
+  if (controlledId != null && controlledId !== i) {
+    const c = players[controlledId];
+    if (c.state === 'CONTROLLED') { c.idleAnchor = c.facing; c.state = 'IDLE'; }  // 記住交回待機時的正前方
+  }
+  u.state = 'CONTROLLED'; u.extractNode = null; controlledId = i;
+  u.facing = u.idleAnchor;  // 接手時正面恢復到該單位「進入閒置時的正前方」
+  aimDir = u.idleAnchor;
+  followExtractId = null;   // 接管控制權即結束「跟隨撤離」
+}
+function toggleExtract() {
+  if (controlledId == null) return;
+  const u = players[controlledId];
+  if (u.state === 'CONTROLLED') {
+    u.idleAnchor = u.facing;  // 撤離途中的 overwatch 也以當前正前方為錨
+    u.state = 'EXTRACTING'; u.extractNode = null;
+    controlledId = null;
+    followExtractId = u.id;   // 釋放控制，但鏡頭續跟這名撤離單位（直到按下非換人鍵）
+  }
+}
+function autoPossess(fromPos) {
+  // 非撤離(IDLE)單位優先，沒有才退而附身撤離中(EXTRACTING)單位（會把它抓回手動控制）
+  const pick = (state) => {
+    let best = -1, bd = Infinity;
+    for (const p of players) { if (p.state !== state) continue; const d = fromPos ? dist(p.pos, fromPos) : p.id; if (d < bd) { bd = d; best = p.id; } }
+    return best;
+  };
+  let id = pick('IDLE'); if (id < 0) id = pick('EXTRACTING');
+  if (id >= 0) possess(id); else controlledId = null;
+}
+
+/* =====================================================================
+   Combat — 開火(發散) / 換彈 / 彈藥 / 子彈 / 傷害 / 死亡
+   ===================================================================== */
+// spreadDeg：本發實際發散；bloomAdd>0 才累積連射發散。回傳是否真的開了一槍。
+function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
+  const W = u.weapon;
+  if (u.reloadT > 0 || u.fireCooldown > 0) return false;
+  if (u.ammoInMag <= 0) { startReload(u); return false; }
+  const a = angle + (Math.random() * 2 - 1) * spreadDeg * (u.spreadMul || 1) * Math.PI / 180;   // 裝備(穩定器)可降發散
+  bullets.push({
+    x: u.pos.x + Math.cos(angle) * (u.radius + 2), y: u.pos.y + Math.sin(angle) * (u.radius + 2),
+    vx: Math.cos(a) * W.projSpeed, vy: Math.sin(a) * W.projSpeed,
+    dmg: W.damage, faction: u.faction, range: W.range, traveled: 0,
+    ox: u.pos.x, oy: u.pos.y,   // 發射原點（低矮牆「貼牆可越射」判定用）
+  });
+  u.ammoInMag--;
+  u.fireCooldown = (1 / W.fireRate) / (fireRateMult * (u.buffFire || 1));   // 道具(腎上腺素)可加射速
+  if (bloomAdd) u.bloom = Math.min(W.spreadMax, u.bloom + bloomAdd);
+  u.muzzle = 0.05;
+  if (u.ammoInMag <= 0) startReload(u);
+  if (u.faction === 'player') alertEnemiesNear(u.pos);   // 槍聲：驚動聽覺半徑內的閒置敵人（不論命中）
+  return true;
+}
+// 玩家開火的「槍聲」：半徑內 IDLE 敵人轉入 ENGAGED（latch）
+function alertEnemiesNear(pos) {
+  for (const e of enemies) if (!e.dead && e.state === 'IDLE' && dist(e.pos, pos) <= CONFIG.enemyHearRadius) e.state = 'ENGAGED';
+}
+const unitMag = (u) => u.magazine || u.weapon.magazine;   // 有效彈夾（裝備可改）
+function startReload(u) {
+  if (u.reloadT > 0 || u.ammoReserve <= 0 || u.ammoInMag >= unitMag(u)) return;
+  u.reloadDur = u.weapon.reloadTime * (u.reloadMul || 1);   // 裝備(快卸彈匣)可加速
+  u.reloadT = u.reloadDur;
+}
+function tickAmmo(u, dt) {
+  if (u.reloadT > 0) {
+    u.reloadT -= dt;
+    if (u.reloadT <= 0) {
+      u.reloadT = 0;
+      const take = Math.min(unitMag(u) - u.ammoInMag, u.ammoReserve);
+      u.ammoInMag += take; u.ammoReserve -= take;
+    }
+  }
+  if (u.bloom > 0) u.bloom = Math.max(0, u.bloom - u.weapon.spreadRecover * dt);
+  if (u.buffT > 0) { u.buffT -= dt; if (u.buffT <= 0) { u.buffT = 0; u.buffMove = 1; u.buffFire = 1; } }  // 道具短時 buff 倒數
+}
+// 手動：基礎+連射 bloom（玩家的扳機紀律＝技巧）。待機：固定平庸發散、不累積 bloom、射速慢。敵人：同手動會 bloom。
+// 技能（僅手動可用，待機不放）：目前佔位＝恢復少量生命，有 CD
+function useAbility(u) {
+  if (!u || u.state !== 'CONTROLLED' || !u.ability || u.abilityCd > 0) return;
+  const a = u.ability;
+  if (a.heal) { u.hp = Math.min(u.maxHp, u.hp + a.heal); spawnHeal(u.pos); }
+  u.abilityCd = a.cooldown;
+}
+// 道具（一次性，Q 鍵；用完消失）：瞬補 / 補彈 / 短時 buff
+function useItem(u) {
+  if (!u || u.state !== 'CONTROLLED' || !u.itemId || u.itemUsed) return;
+  const it = ITEMS[u.itemId];
+  if (it.heal) { u.hp = Math.min(u.maxHp, u.hp + it.heal); spawnHeal(u.pos); }
+  if (it.refill) { u.ammoInMag = unitMag(u); if (!isInfiniteAmmo(u.weaponId)) u.ammoReserve += unitMag(u) * 2; spawnPickup(u.pos); }
+  if (it.buff) { u.buffT = it.buff.dur; u.buffMove = it.buff.moveMul || 1; u.buffFire = it.buff.fireRateMul || 1; spawnHeal(u.pos); }
+  u.itemUsed = true;   // 用完即消（rosterFromPlayer 不再帶回）
+}
+
+// 手動：基礎+連射 bloom（玩家扳機紀律＝技巧）。敵人：同手動會 bloom。
+const manualFire = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase + u.bloom, 1, u.weapon.spreadPerShot);
+const enemyFire  = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase + u.bloom, 1, u.weapon.spreadPerShot);
+// 待機開火：基礎較差(spreadBase/精度倍率)＋連射 bloom；射速 ×idleFireRateMult。TAP 靠停頓讓 bloom 回復、AUTO 把 bloom 拉滿。
+const idleEngageFire = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase / CONFIG.idleAccuracyMult + u.bloom, CONFIG.idleFireRateMult, u.weapon.spreadPerShot);
+
+function damageUnit(u, dmg) {
+  u.hp -= dmg * (1 - (u.dmgResist || 0));   // 裝備(護甲/重甲)減傷
+  if (u.faction === 'player') u.alertTimer = CONFIG.ghostAlertTime;
+  else u.state = 'ENGAGED';   // 被命中 → 進入交戰（latch）
+  spawnHit(u.pos);
+  if (u.hp <= 0) killUnit(u);
+}
+function killUnit(u) {
+  spawnDeath(u.pos);
+  if (u.faction === 'enemy') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); }
+  else {
+    spawnDrop(u, CONFIG.ammo.salvageAlly);
+    const wasControlled = (u.state === 'CONTROLLED') || controlledId === u.id;
+    u.state = 'DEAD'; deadCount++;
+    if (wasControlled) { controlledId = null; autoPossess(u.pos); }
+  }
+}
+// 掉落：陣亡單位的武器落在原地（底線武器不掉、無回收價值）。彈藥折算量於休息關進儲備。
+function spawnDrop(u, ammo) {
+  if (isInfiniteAmmo(u.weaponId)) return;
+  drops.push({ pos: { x: u.pos.x, y: u.pos.y }, kind: 'weapon', id: u.weaponId, ammo });
+}
+// 拾取：僅被附身單位走到掉落物上即撿入臨時背包（任務中不可動用＝撿/不撿的時間/暴露取捨）
+function updateDrops() {
+  if (controlledId == null) return;
+  const u = players[controlledId]; if (!u || u.state !== 'CONTROLLED') return;
+  for (let i = drops.length - 1; i >= 0; i--) {
+    if (dist(u.pos, drops[i].pos) <= CONFIG.pickupRadius) {
+      const d = drops[i]; backpack.push({ kind: d.kind, id: d.id, ammo: d.ammo });
+      spawnPickup(d.pos); drops.splice(i, 1);
+    }
+  }
+}
+
+/* =====================================================================
+   互動 — 開關門 / 按鈕（僅被附身單位；自走單位不會開門，§Q4）
+   ===================================================================== */
+const doorMid = (d) => ({ x: (d.x1 + d.x2) / 2, y: (d.y1 + d.y2) / 2 });
+// 到門「線段最近點」的距離（門很寬，量到中點會在門邊按不到）
+const distToDoor = (pos, d) => dist(pos, closestOnSeg(pos, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }));
+// 回傳被附身單位 interactRadius 內最近的互動點（門/按鈕/俘虜），無則 null
+function nearestInteractable(u) {
+  if (!u) return null;
+  let best = null, bd = CONFIG.interactRadius;
+  for (const d of MAP.doors) { const dd = distToDoor(u.pos, d); if (dd < bd) { bd = dd; best = { type: 'door', door: d }; } }
+  for (const b of MAP.buttons) { const dd = dist(u.pos, { x: b.x, y: b.y }); if (dd < bd) { bd = dd; best = { type: 'button', button: b }; } }
+  for (const pr of (prisoners || [])) { if (pr.freed) continue; const dd = dist(u.pos, pr.pos); if (dd < bd) { bd = dd; best = { type: 'prisoner', prisoner: pr }; } }
+  return best;
+}
+function tryInteract() {
+  if (controlledId == null) return;
+  const u = players[controlledId]; if (!u || u.state !== 'CONTROLLED') return;
+  const it = nearestInteractable(u); if (!it) return;
+  if (it.type === 'door') it.door.open = !it.door.open;
+  else if (it.type === 'button') { const d = MAP.doors.find(x => x.id === it.button.doorId); if (d) d.open = !d.open; }
+  else if (it.type === 'prisoner') freePrisoner(it.prisoner);
+}
+// 釋放俘虜 → 變成一名我方單位（隨機個性 + 底線 pistol；需自行撤離才永久入隊）
+function freePrisoner(pr) {
+  pr.freed = true;
+  const cfg = makeRecruit(new Set(players.map(p => p.name)));
+  cfg.weaponId = FLOOR_WEAPON;   // 底線武器（跟喚醒 sleeper 同規則）
+  const u = makePlayer(players.length, cfg, { x: pr.pos.x, y: pr.pos.y });
+  u.state = 'IDLE'; u.idleAnchor = u.facing;
+  players.push(u); spawnHeal(pr.pos);
+}
+function updateBullets(dt) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    const old = { x: b.x, y: b.y };
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    b.traveled += Math.hypot(b.vx, b.vy) * dt;
+    let gone = b.traveled > b.range;
+    if (!gone) for (const w of MAP.walls) if (segIntersect(old, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 })) { gone = true; break; }           // 永久牆全擋
+    if (!gone) for (const dr of MAP.doors) if (!dr.open && segIntersect(old, b, { x: dr.x1, y: dr.y1 }, { x: dr.x2, y: dr.y2 })) { gone = true; break; } // 關門全擋
+    // 低矮牆＝掩體：射手貼近(<closeRange)可越射；否則 blockChance 機率擋下
+    if (!gone) for (const lw of MAP.lowWalls) {
+      if (!segIntersect(old, b, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 })) continue;
+      const cp = closestOnSeg({ x: b.ox, y: b.oy }, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 });
+      if (dist({ x: b.ox, y: b.oy }, cp) >= CONFIG.lowWall.closeRange && Math.random() < CONFIG.lowWall.blockChance) { gone = true; break; }
+    }
+    if (!gone) {
+      const targets = b.faction === 'player' ? enemies.filter(e => !e.dead) : activePlayers();
+      for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) { damageUnit(t, b.dmg); gone = true; break; }
+    }
+    if (gone) bullets.splice(i, 1);
+  }
+}
+
+/* =====================================================================
+   IdleAI — 待機策略（套懲罰、僅對「感知到」的敵人反應）
+   ===================================================================== */
+function idleTick(u, dt, lockFacing) {
+  const W = u.weapon, st = u.idleStrategy;
+  const turn = (u.turnSpeed || W.turnSpeed) * Math.PI / 180 * dt;
+
+  // 感知到的最近威脅（近身或視錐內）
+  let nearest = null, nd = Infinity;
+  for (const e of enemies) { if (e.dead) continue; if (!canSee(u, e.pos)) continue; const d = dist(u.pos, e.pos); if (d < nd) { nd = d; nearest = e; } }
+
+  // 視線（個性軸）。lockFacing＝true 時沿用外部設定的朝向（撤離：面向移動方向）
+  if (lockFacing) {
+    // 不改朝向
+  } else if (st.facing === 'SWEEP') {
+    u.sweepPhase += CONFIG.sweepSpeed * Math.PI / 180 * dt * u.sweepDir;
+    const amp = CONFIG.sweepAmpDeg * Math.PI / 180;
+    if (u.sweepPhase > amp) { u.sweepPhase = amp; u.sweepDir = -1; }
+    if (u.sweepPhase < -amp) { u.sweepPhase = -amp; u.sweepDir = 1; }
+    u.facing = u.idleAnchor + u.sweepPhase;                 // 以閒置正前方為中心掃視
+  } else if (st.facing === 'TRACK') {
+    if (nearest) u.facing = rotToward(u.facing, angTo(u.pos, nearest.pos), turn);
+  } else if (st.facing === 'WANDER') {
+    // 只在閒置正前方附近小幅擺動（視野不離正前方）、緩慢轉動
+    u.wanderTimer -= dt;
+    if (u.wanderTimer <= 0) { u.wanderTarget = u.idleAnchor + (Math.random() * 2 - 1) * CONFIG.wanderAmpDeg * Math.PI / 180; u.wanderTimer = 1.2 + Math.random() * 1.8; }
+    u.facing = rotToward(u.facing, u.wanderTarget, CONFIG.wanderSpeed * Math.PI / 180 * dt);
+  } // HOLD：維持閒置正前方
+  if (u.alertTimer > 0) u.alertTimer -= dt;
+
+  // 交戰目標：感知到 + 在射程內
+  let target = null, td = Infinity;
+  for (const e of enemies) {
+    if (e.dead || st.targeting === 'NONE') continue;
+    if (!canSee(u, e.pos)) continue;
+    const d = dist(u.pos, e.pos);
+    if (d <= W.range && d < td) { td = d; target = e; }
+  }
+  let mayFire = false;
+  if (st.fireMode === 'AGGRESSIVE' || st.fireMode === 'SUPPRESSIVE') mayFire = !!target;
+  else if (st.fireMode === 'DEFENSIVE') mayFire = !!target && (u.alertTimer > 0 || (nearest && nd < CONFIG.ghostCloseRange));
+
+  u.engageTimer = mayFire ? u.engageTimer + dt : 0;
+  if (mayFire && u.engageTimer >= CONFIG.idleReactionDelay) {
+    const ang = angTo(u.pos, target.pos);
+    if (st.discipline === 'AUTO') {
+      idleEngageFire(u, ang);                              // 扣到底：持續噴、bloom 拉滿、耗彈快
+    } else {                                               // TAP 點放：短 burst + 停頓讓 bloom 回復
+      if (u.burstCd > 0) u.burstCd -= dt;
+      else {
+        if (u.burstLeft <= 0) u.burstLeft = CONFIG.idleTap.size;
+        if (idleEngageFire(u, ang)) { u.burstLeft--; if (u.burstLeft <= 0) u.burstCd = CONFIG.idleTap.gap; }
+      }
+    }
+  } else { u.burstCd = 0; u.burstLeft = CONFIG.idleTap.size; }
+}
+
+/* =====================================================================
+   EnemyAI — waypoint 選點(tag+位置+暴露+hysteresis+reservation)
+             開火/朝向受感知限制；堅守時視錐朝「最近、朝我方那側的 waypoint」
+   ===================================================================== */
+const isSpecial = (n) => wp(n).tags.some(t => SPECIAL_TAGS.includes(t));
+function releaseReservation(e) { if (e.reservedNode != null && reservations.get(e.reservedNode) === e.id) reservations.delete(e.reservedNode); e.reservedNode = null; }
+function commitReservation(e, node) { if (isSpecial(node)) { reservations.set(node, e.id); e.reservedNode = node; } }
+function nearestFriendly(pos) { let best = null, bd = Infinity; for (const p of activePlayers()) { const d = dist(pos, p.pos); if (d < bd) { bd = d; best = p; } } return best; }
+
+function scoreNode(e, n, f, engaging) {
+  const node = wp(n), P = e.personality;
+  let s = 0;
+  for (const t of node.tags) s += (P.tags[t] || 0);
+  if (!f) return s;
+  const dn = dist(node.pos, f.pos);
+  s += (1 - Math.min(1, dn / MAXD)) * P.wRush * (engaging ? CONFIG.holdProxMul : CONFIG.chargeMul);
+  if (P.wFlank) { const a = Math.abs(angDiff(angTo(f.pos, node.pos), f.facing)); s += (a / Math.PI) * P.wFlank; }
+  // 暴露：被我方「視野」覆蓋的節點扣分（用感知模型）
+  let exposed = 0;
+  for (const p of activePlayers()) if (canSee(p, node.pos)) exposed++;
+  s -= exposed * P.wExpose * (engaging ? 1 : 0.25);
+  const fn = nearestNode(f.pos, false);
+  if (nodeVis[n][fn]) s += P.wSight;
+  return s;
+}
+
+// 堅守/推進時的視錐朝向目標：最近、且位於朝我方那側的 waypoint
+function watchPoint(e, f) {
+  if (!f) return wp(e.targetNode).pos;
+  const tox = f.pos.x - e.pos.x, toy = f.pos.y - e.pos.y;
+  let best = null, bd = Infinity;
+  for (const n of MAP.waypoints) {
+    if (n.id === e.currentNode) continue;
+    const dx = n.pos.x - e.pos.x, dy = n.pos.y - e.pos.y;
+    if (dx * tox + dy * toy <= 0) continue;          // 只取朝我方那一側
+    const d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best ? best.pos : f.pos;
+}
+
+// 交戰中敵人會開擋路的門（IDLE 不會）——§ 規格：敵人原則上不主動開門，除非已開始交戰
+function enemyTryOpenDoors(e) {
+  for (const d of MAP.doors) { if (d.open) continue; if (distToDoor(e.pos, d) <= CONFIG.interactRadius) d.open = true; }
+}
+
+// IDLE：守在崗位、視錐維持固定 watchFacing、不推進、不開門、不開火（看到/聽到/被打才轉 ENGAGED）
+function enemyIdleTick(e, dt) {
+  const turn = e.weapon.turnSpeed * Math.PI / 180 * dt;
+  e.facing = rotToward(e.facing, e.watchFacing, turn);   // 緩慢回正到守備朝向
+  e.engageTimer = 0;
+}
+
+function enemyTick(e, dt) {
+  const f = nearestFriendly(e.pos);
+  // 偵測（任一狀態都檢查）：看到玩家 → 進入交戰（latch）
+  if (f && canSee(e, f.pos)) e.state = 'ENGAGED';
+  if (e.state !== 'ENGAGED') { enemyIdleTick(e, dt); return; }   // 守點被動
+
+  // --- ENGAGED：選點推進 / charge-hold / 開火 / 開擋路的門 ---
+  const seen = !!f && canSee(e, f.pos);
+  const inRange = !!f && dist(e.pos, f.pos) <= e.weapon.range;
+  const engaging = seen && inRange;
+
+  let cands = [e.currentNode, ...adj[e.currentNode]];
+  cands = [...new Set(cands)].filter(n => !(isSpecial(n) && reservations.has(n) && reservations.get(n) !== e.id));
+  if (cands.length === 0) cands = [e.currentNode];
+
+  let best = e.currentNode, bestScore = -Infinity;
+  for (const n of cands) {
+    let s = scoreNode(e, n, f, engaging);
+    if (n === e.targetNode && hysteresisOn) s += CONFIG.hysteresisBonus;
+    if (s > bestScore) { bestScore = s; best = n; }
+  }
+  if (best !== e.targetNode) { releaseReservation(e); e.targetNode = best; commitReservation(e, best); }
+
+  const tn = wp(e.targetNode);
+  moveToward(e, tn.pos, CONFIG.enemy.moveSpeed * dt);
+  if (dist(e.pos, tn.pos) < CONFIG.nodeReach) e.currentNode = e.targetNode;
+
+  const turn = e.weapon.turnSpeed * Math.PI / 180 * dt;
+  if (seen) {
+    const ang = angTo(e.pos, f.pos);
+    e.facing = rotToward(e.facing, ang, turn * 2);
+    if (inRange) { e.engageTimer += dt; if (e.engageTimer >= CONFIG.enemy.reactionDelay) enemyFire(e, ang); }
+    else e.engageTimer = 0;
+  } else {
+    e.engageTimer = 0;
+    e.facing = rotToward(e.facing, angTo(e.pos, watchPoint(e, f)), turn);  // 視錐朝可能的進攻路線
+  }
+  enemyTryOpenDoors(e);   // 交戰中可破門追擊
+}
+
+/* =====================================================================
+   Extraction — EXTRACTING 自走（沿圖直線、保留 overwatch）
+   ===================================================================== */
+function extractTick(u, dt) {
+  if (u.extractNode == null) u.extractNode = nearestNode(u.pos, true);
+  if (u.extractNode !== extractNodeId && dist(u.pos, wp(u.extractNode).pos) < CONFIG.nodeReach) {
+    const nx = nextHop[u.extractNode]; if (nx != null) u.extractNode = nx;
+  }
+  const goal = (u.extractNode === extractNodeId) ? EXTRACT : wp(u.extractNode).pos;
+  u.facing = rotToward(u.facing, angTo(u.pos, goal), (u.turnSpeed || u.weapon.turnSpeed) * Math.PI / 180 * dt);  // 面向移動方向
+  moveToward(u, goal, CONFIG.moveSpeed * lowWallSpeedMult(u.pos) * (u.moveMul || 1) * dt);   // 低矮牆減速 + 裝備
+  idleTick(u, dt, true);   // 保留待機開火，但不改朝向（沿用移動朝向）
+}
+
+/* =====================================================================
+   Movement helpers
+   ===================================================================== */
+// Shift 奔跑倍率：隨武器重量遞減（夾在 minMult..base）
+const sprintMult = (u) => clamp(CONFIG.sprint.base - (u.weapon.weight - 1) * CONFIG.sprint.weightPenalty, CONFIG.sprint.minMult, CONFIG.sprint.base);
+
+function moveToward(u, goal, step) {
+  const d = dist(u.pos, goal); if (d < 1e-3) return;
+  const k = Math.min(step, d) / d;
+  u.pos.x += (goal.x - u.pos.x) * k; u.pos.y += (goal.y - u.pos.y) * k;
+}
+function pushOutSeg(u, x1, y1, x2, y2) {
+  const cp = closestOnSeg(u.pos, { x: x1, y: y1 }, { x: x2, y: y2 });
+  const dx = u.pos.x - cp.x, dy = u.pos.y - cp.y, d = Math.hypot(dx, dy);
+  if (d < u.radius) { const push = u.radius - d, nx = d > 1e-6 ? dx / d : 1, ny = d > 1e-6 ? dy / d : 0; u.pos.x += nx * push; u.pos.y += ny * push; }
+}
+function collideWalls(u) {
+  for (const w of MAP.walls) pushOutSeg(u, w.x1, w.y1, w.x2, w.y2);
+  for (const dr of MAP.doors) if (!dr.open) pushOutSeg(u, dr.x1, dr.y1, dr.x2, dr.y2);   // 關門擋全部單位
+  if (u.faction === 'enemy') for (const lw of MAP.lowWalls) pushOutSeg(u, lw.x1, lw.y1, lw.x2, lw.y2); // 低矮牆＝對敵實體（繞行）
+}
+// 玩家是否貼著低矮牆（→ 移動減速）。低矮牆不擋玩家、只拖慢。
+function onLowWall(pos, r) {
+  for (const lw of MAP.lowWalls) { const cp = closestOnSeg(pos, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 }); if (dist(pos, cp) < r) return true; }
+  return false;
+}
+const lowWallSpeedMult = (pos) => onLowWall(pos, CONFIG.unitRadius + CONFIG.lowWall.touchR) ? CONFIG.lowWall.slow : 1;
+function separate(units) {
+  for (let i = 0; i < units.length; i++) for (let j = i + 1; j < units.length; j++) {
+    const a = units[i], b = units[j];
+    const dx = b.pos.x - a.pos.x, dy = b.pos.y - a.pos.y, d = Math.hypot(dx, dy), min = a.radius + b.radius;
+    if (d > 0 && d < min) { const push = (min - d) / 2, nx = dx / d, ny = dy / d; a.pos.x -= nx * push; a.pos.y -= ny * push; b.pos.x += nx * push; b.pos.y += ny * push; }
+  }
+}
+
+/* =====================================================================
+   Particles
+   ===================================================================== */
+function spawnHit(p) { for (let i = 0; i < 4; i++) particles.push(mkPart(p, 90, 0.25, '#ffd27d')); }
+function spawnDeath(p) { for (let i = 0; i < 14; i++) particles.push(mkPart(p, 180, 0.5, '#ff6b6b')); }
+function spawnHeal(p) { for (let i = 0; i < 12; i++) particles.push(mkPart(p, 70, 0.55, '#7fffa8')); }
+function spawnPickup(p) { for (let i = 0; i < 10; i++) particles.push(mkPart(p, 90, 0.5, '#ffe08a')); }
+function mkPart(p, spd, life, col) { const a = Math.random() * Math.PI * 2, s = spd * (0.4 + Math.random() * 0.6); return { x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life, max: life, col }; }
+function updateParticles(dt) { for (let i = particles.length - 1; i >= 0; i--) { const q = particles[i]; q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; if (q.life <= 0) particles.splice(i, 1); } }
+
+/* =====================================================================
+   Input
+   ===================================================================== */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const fogCanvas = document.createElement('canvas');   // 離屏迷霧遮罩（避免在主畫布上 destination-out 擦掉世界）
+fogCanvas.width = cv.width; fogCanvas.height = cv.height;
+const fctx = fogCanvas.getContext('2d');
+const keys = new Set();
+const mouse = { down: false, mx: cv.width / 2, my: cv.height / 2 };
+function canvasPos(ev) { const r = cv.getBoundingClientRect(); return { x: (ev.clientX - r.left) * (cv.width / r.width), y: (ev.clientY - r.top) * (cv.height / r.height) }; }
+
+// 點擊：戰鬥→鎖定滑鼠開始；路線圖→選節點；結算畫面→重開
+cv.addEventListener('click', () => {
+  if (scene === 'COMBAT') { if (!pointerLocked && cv.requestPointerLock) cv.requestPointerLock(); }
+  else if (scene === 'MAP') {
+    const b = editorBtnRect;
+    if (b && mouse.mx >= b.x && mouse.mx <= b.x + b.w && mouse.my >= b.y && mouse.my <= b.y + b.h) { editorOpen(); return; }
+    const id = roadNodeAt(mouse.mx, mouse.my); if (id != null) selectNode(id);
+  }
+  else if (scene === 'REST' || scene === 'ARMORY') restClick(mouse.mx, mouse.my);
+  else if (scene === 'RUNEND' || scene === 'RUNWIN') initRun();
+  // EDITOR：互動在 mousedown/up 處理（支援拖拉），click 不處理
+});
+// 休息關：命中最後繪製（最上層）的可點區域
+function restClick(x, y) {
+  for (let i = restRects.length - 1; i >= 0; i--) {
+    const r = restRects[i];
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.fn(); return; }
+  }
+}
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = (document.pointerLockElement === cv);
+  cv.style.cursor = pointerLocked ? 'none' : 'crosshair';
+  if (!pointerLocked) mouse.down = false;
+});
+cv.addEventListener('mousemove', e => {
+  if (pointerLocked) aimDir += (e.movementX || 0) * CONFIG.mouseSensitivity;  // 戰鬥：滑鼠位移轉向
+  else { const p = canvasPos(e); mouse.mx = p.x; mouse.my = p.y; }            // 選單：追蹤游標位置
+});
+cv.addEventListener('mousedown', e => {
+  if (scene === 'EDITOR') { if (e.button === 2) editorEraseAt(snapPt({ x: mouse.mx, y: mouse.my })); else editorMouseDown(); return; }
+  if (scene !== 'COMBAT' || !pointerLocked) return;
+  if (e.button === 0) mouse.down = true;                                  // 左鍵開火
+  else if (e.button === 2 && controlledId != null) useAbility(players[controlledId]); // 右鍵放技能
+});
+window.addEventListener('mouseup', e => { if (scene === 'EDITOR' && e.button === 0) { editorMouseUp(); return; } if (e.button === 0) mouse.down = false; });
+
+// 編輯器滑鼠：UI 區優先(原始游標)，否則畫布放置(對齊游標)；拖拉工具於 mouseup 落筆
+function editorMouseDown() {
+  for (let i = editRects.length - 1; i >= 0; i--) { const r = editRects[i]; if (mouse.mx >= r.x && mouse.mx <= r.x + r.w && mouse.my >= r.y && mouse.my <= r.y + r.h) { r.fn(); return; } }
+  const m = snapPt({ x: mouse.mx, y: mouse.my });
+  if (isDragTool(editTool)) editDrag = m; else editorClickAt(m);
+}
+function editorMouseUp() {
+  if (editDrag && isDragTool(editTool)) { const a = editDrag, b = snapPt({ x: mouse.mx, y: mouse.my }); if (dist(a, b) >= 8) editorCommitSeg(a, b); editDrag = null; }
+}
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+// 路線圖：游標下的可選節點 id（無則 null）
+function roadNodeAt(x, y) {
+  for (const id of roadAvailable) {
+    if (roadCompleted.has(id)) continue;
+    const p = roadNodePos(roadNode(id));
+    if (Math.hypot(x - p.x, y - p.y) <= 26) return id;
+  }
+  return null;
+}
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys.add(k);
+  if (e.repeat) return;
+
+  if (scene === 'MAP') {                         // 路線圖：數字鍵選可前往節點（亦可滑鼠點選）
+    if (k >= '1' && k <= '9') { const i = parseInt(k, 10) - 1; const avail = roadAvailable.filter(id => !roadCompleted.has(id)); if (i < avail.length) selectNode(avail[i]); }
+    return;
+  }
+  if (scene === 'REST') {                        // 休息關：依流程階段（鍵盤＝便捷，主要互動為滑鼠點選）
+    if (restPhase === 'CHOICE') { if (k === '1') restDoScavenge(); else if (k === '2') restDoAwaken(); }
+    else if (restPhase === 'OFFERS') { if (k >= '1' && k <= '9') pickOffer(parseInt(k, 10) - 1); }
+    else if (restPhase === 'TARGET') { if (k >= '1' && k <= '9') applyTarget(parseInt(k, 10) - 1); }
+    else if (restPhase === 'DONE') { if (k === ' ' || k === 'enter') restDoContinue(); }
+    if ((k >= '1' && k <= '9') || k === ' ' || k === 'enter') e.preventDefault();
+    return;
+  }
+  if (scene === 'EDITOR') {                       // 編輯器：數字鍵切工具、G 格線、Esc 離開
+    const tools = ['wall', 'door', 'low', 'wp', 'edge', 'spawn', 'button', 'entry', 'extract', 'erase'];
+    if (k >= '1' && k <= '9') { editTool = tools[parseInt(k, 10) - 1] || editTool; editSelWp = null; }
+    else if (k === '0') editTool = 'erase';
+    else if (k === 'p') { editTool = 'prisoner'; editSelWp = null; }
+    else if (k === 'g') editSnap = editSnap ? 0 : 20;
+    else if (k === 'escape') editorExit();
+    return;
+  }
+  if (scene === 'ARMORY') { if (k >= '1' && k <= '9') armoryPick(parseInt(k, 10) - 1); return; }
+  if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') initRun(); return; }
+
+  // --- COMBAT ---
+  if (fromEditor && k === 'backspace') { fromEditor = false; forcedMap = null; scene = 'EDITOR'; releasePointer(); editMsg = '已中止試玩，回到編輯器'; e.preventDefault(); return; }
+  if (followExtractId != null && !(k >= '1' && k <= '9')) followExtractId = null;  // 非換人鍵 → 結束跟隨撤離
+  if (k >= '1' && k <= '9') {
+    const i = parseInt(k, 10) - 1;
+    const handover = CONFIG.switchHandoverMs / 1000;
+    if (i < players.length && i !== controlledId && (simTime - lastSwitchT) >= handover) { possess(i); lastSwitchT = simTime; }
+  }
+  if (k === 'f') toggleExtract();
+  if (k === ' ') { if (controlledId != null) useAbility(players[controlledId]); }       // 空白鍵=技能（右鍵亦可）
+  if (k === 'r') { if (controlledId != null) startReload(players[controlledId]); }       // 換彈
+  if (k === 'q') { if (controlledId != null) useItem(players[controlledId]); }           // 道具（一次性）
+  if (k === 'e') tryInteract();                                                          // 互動：開關門/按鈕
+  if (k === 'g') debugView = !debugView;
+  if (k === 'h') hysteresisOn = !hysteresisOn;
+  if ([' ', 'w', 'a', 's', 'd'].includes(k)) e.preventDefault();
+});
+window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+
+/* =====================================================================
+   Update — 固定時間步
+   ===================================================================== */
+function update(dt) {
+  if (scene !== 'COMBAT') return;   // MAP/REST/結算：不模擬、不需鏡頭（此時 cam/players 可能尚未建立）
+  if (!pointerLocked) return;       // 戰鬥：滑鼠鎖定後才開始/繼續推進（未鎖定＝暫停）
+  updateCamera(dt);
+
+  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
+  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; tickAmmo(e, dt); }
+
+  // 1) 被附身單位：滑鼠轉向(turnSpeed) + 相對角色移動 + 左鍵開火
+  if (controlledId != null) {
+    const u = players[controlledId];
+    if (u.state === 'CONTROLLED') {
+      // 砲塔以「武器迴轉速度」追滑鼠輸入累積的目標朝向（追不上＝轉向延遲；裝備可改迴轉）
+      u.facing = rotToward(u.facing, aimDir, (u.turnSpeed || u.weapon.turnSpeed) * Math.PI / 180 * dt);
+      let fwd = 0, strafe = 0;
+      if (keys.has('w')) fwd += 1; if (keys.has('s')) fwd -= 1;
+      if (keys.has('d')) strafe += 1; if (keys.has('a')) strafe -= 1;
+      const moving = !!(fwd || strafe);
+      u.sprinting = moving && keys.has('shift');                  // Shift 奔跑
+      if (moving) {
+        const fx = Math.cos(u.facing), fy = Math.sin(u.facing);
+        const rx = Math.cos(u.facing + Math.PI / 2), ry = Math.sin(u.facing + Math.PI / 2);
+        let mx = fx * fwd + rx * strafe, my = fy * fwd + ry * strafe;
+        const l = Math.hypot(mx, my) || 1;
+        const spd = CONFIG.moveSpeed * (u.sprinting ? sprintMult(u) : 1) * lowWallSpeedMult(u.pos) * (u.moveMul || 1) * (u.buffMove || 1);  // 低矮牆減速 + 裝備/道具
+        u.pos.x += mx / l * spd * dt; u.pos.y += my / l * spd * dt;
+      }
+      if (mouse.down) manualFire(u, u.facing);
+    }
+  }
+
+  // 2) 待機 / 撤離
+  for (const p of players) { if (p.state === 'IDLE') idleTick(p, dt); else if (p.state === 'EXTRACTING') extractTick(p, dt); }
+
+  // 3) 敵人 AI
+  for (const e of enemies) if (!e.dead) enemyTick(e, dt);
+
+  // 4) 軟計時 → 追兵
+  if (simTime > curTimeBudget) {
+    reinforceTimer -= dt;
+    if (reinforceTimer <= 0) {
+      const e = makeEnemy(nearestNode(ENTRY, false), 'rusher', true);
+      e.pos = { x: ENTRY.x, y: ENTRY.y };
+      e.state = 'ENGAGED';                 // 追兵是來獵殺的：直接交戰
+      enemies.push(e);
+      const ramps = Math.floor((simTime - curTimeBudget) / CONFIG.reinforce.rampEvery);
+      reinforceTimer = Math.max(CONFIG.reinforce.minInterval, CONFIG.reinforce.startInterval + CONFIG.reinforce.rampDelta * ramps);
+    }
+  }
+
+  // 5) 子彈 / 特效
+  updateBullets(dt); updateParticles(dt);
+
+  // 6) 分離 + 牆面碰撞 + 掉落物拾取
+  const movers = [...activePlayers(), ...enemies.filter(e => !e.dead)];
+  separate(movers);
+  for (const u of movers) collideWalls(u);
+  updateDrops();
+
+  // 7) 撤離判定
+  for (const p of players) {
+    if ((p.state === 'CONTROLLED' || p.state === 'IDLE' || p.state === 'EXTRACTING') && dist(p.pos, EXTRACT) < CONFIG.extractRadius) {
+      p.state = 'EXTRACTED'; extractedCount++;
+      if (controlledId === p.id) { controlledId = null; autoPossess(p.pos); }
+    }
+  }
+
+  // 7.5) 戰鬥中若沒被附身、又非刻意跟隨撤離中 → 自動接手場上其他單位（非撤離優先），不留空轉
+  if (controlledId == null && followExtractId == null && activePlayers().length > 0) autoPossess(null);
+
+  // 8) 計時 + 結算（場上無我方 → 進休息關 或 run 結束）
+  simTime += dt;
+  if (activePlayers().length === 0) endMission();
+}
+
+/* =====================================================================
+   Render — 旋轉視角 + 戰爭迷霧
+   ===================================================================== */
+const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+function applyCam() { ctx.translate(cv.width / 2, cv.height * CONFIG.camera.anchorY); ctx.rotate(cam.angle); ctx.scale(cam.scale, cam.scale); ctx.translate(-cam.x, -cam.y); }
+
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = CONFIG.fog.color; ctx.fillRect(0, 0, cv.width, cv.height);
+
+  if (scene === 'MAP') { drawRoadmap(); return; }
+  if (scene === 'EDITOR') { drawEditor(); return; }
+  if (scene === 'REST') { drawRest(); return; }
+  if (scene === 'ARMORY') { drawArmory(); return; }
+  if (scene === 'RUNEND') { drawRunEnd(); return; }
+  if (scene === 'RUNWIN') { drawRunWin(); return; }
+
+  // ---- 世界（鏡頭變換）----
+  ctx.save(); applyCam();
+  drawGrid(); drawLowWalls(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
+  drawDrops(); drawPrisoners(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
+  if (debugView) drawDebug();
+  ctx.restore();
+
+  // ---- 戰爭迷霧（除錯時關閉）----
+  if (!debugView) drawFog();
+
+  // ---- 霧上：淡牆骨架（空間參考）----
+  ctx.save(); applyCam(); drawSkeleton(); ctx.restore();
+
+  // ---- 螢幕層：血條/標記/HUD/卡片 ----
+  drawScreenOverlays();
+  drawHUD();
+  drawCards();
+}
+
+function drawGrid() {
+  ctx.strokeStyle = '#10151d'; ctx.lineWidth = 1;
+  for (let x = 40; x <= 1240; x += 40) { ctx.beginPath(); ctx.moveTo(x, 40); ctx.lineTo(x, 680); ctx.stroke(); }
+  for (let y = 40; y <= 680; y += 40) { ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(1240, y); ctx.stroke(); }
+}
+function drawWalls() {
+  ctx.strokeStyle = '#4a5566'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  for (const w of MAP.walls) { ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke(); }
+}
+// 門：關＝粗琥珀實線（實體）；開＝細淡虛線（可通行）
+function drawDoors() {
+  ctx.lineCap = 'round';
+  for (const d of MAP.doors) {
+    if (d.open) { ctx.setLineDash([6, 10]); ctx.strokeStyle = 'rgba(180,150,90,0.35)'; ctx.lineWidth = 3; }
+    else { ctx.setLineDash([]); ctx.strokeStyle = '#caa05a'; ctx.lineWidth = 8; }
+    ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+// 低矮牆＝掩體：半高、藍灰虛線（看得過去、可越/減速、機率擋彈）
+function drawLowWalls() {
+  ctx.setLineDash([10, 6]); ctx.strokeStyle = 'rgba(120,150,180,0.55)'; ctx.lineWidth = 5; ctx.lineCap = 'butt';
+  for (const lw of MAP.lowWalls) { ctx.beginPath(); ctx.moveTo(lw.x1, lw.y1); ctx.lineTo(lw.x2, lw.y2); ctx.stroke(); }
+  ctx.setLineDash([]); ctx.lineCap = 'round';
+}
+// 按鈕：方塊；連動門開＝綠、關＝琥珀
+function drawButtons() {
+  for (const b of MAP.buttons) {
+    const d = MAP.doors.find(x => x.id === b.doorId), open = d && d.open;
+    ctx.fillStyle = open ? '#5fd06b' : '#caa05a'; ctx.fillRect(b.x - 6, b.y - 6, 12, 12);
+    ctx.strokeStyle = '#1a1f28'; ctx.lineWidth = 1.5; ctx.strokeRect(b.x - 6, b.y - 6, 12, 12);
+  }
+}
+function drawWaypoints() {
+  ctx.strokeStyle = 'rgba(120,140,160,0.10)'; ctx.lineWidth = 1;
+  for (const [a, b] of MAP.edges) { ctx.beginPath(); ctx.moveTo(wp(a).pos.x, wp(a).pos.y); ctx.lineTo(wp(b).pos.x, wp(b).pos.y); ctx.stroke(); }
+  for (const n of MAP.waypoints) { const sp = isSpecial(n.id); ctx.fillStyle = sp ? 'rgba(180,160,90,0.30)' : 'rgba(120,140,160,0.18)'; ctx.beginPath(); ctx.arc(n.pos.x, n.pos.y, sp ? 5 : 3, 0, Math.PI * 2); ctx.fill(); }
+}
+function drawZonesWorld() {
+  const pulse = 0.5 + 0.5 * Math.sin(simTime * 4);
+  ctx.strokeStyle = hsl(140, 80, 55, 0.5 + pulse * 0.4); ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(EXTRACT.x, EXTRACT.y, CONFIG.extractRadius, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = hsl(140, 70, 50, 0.10); ctx.fill();
+  const reinforcing = simTime > curTimeBudget;
+  ctx.strokeStyle = reinforcing ? hsl(8, 90, 55, 0.5 + pulse * 0.5) : hsl(30, 70, 55, 0.5); ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(ENTRY.x, ENTRY.y, 22, 0, Math.PI * 2); ctx.stroke();
+}
+function drawBullets() {
+  for (const b of bullets) {
+    ctx.strokeStyle = b.faction === 'player' ? '#7fe3ff' : '#ff9b5a'; ctx.lineWidth = 2.5;
+    const len = 7, l = Math.hypot(b.vx, b.vy) || 1;
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx / l * len, b.y - b.vy / l * len); ctx.stroke();
+  }
+}
+function drawParticles() {
+  for (const q of particles) { ctx.globalAlpha = Math.max(0, q.life / q.max); ctx.fillStyle = q.col; ctx.fillRect(q.x - 1.5, q.y - 1.5, 3, 3); }
+  ctx.globalAlpha = 1;
+}
+// 地上掉落的武器（脈動小方塊 + 稀有度色，被附身單位走過即撿）
+function drawDrops() {
+  const pulse = 0.6 + 0.4 * Math.sin(simTime * 6);
+  for (const d of drops) {
+    const W = WEAPONS[d.id], col = rarityColor(W.rarity);
+    ctx.globalAlpha = pulse; ctx.fillStyle = col;
+    ctx.fillRect(d.pos.x - 5, d.pos.y - 5, 10, 10);
+    ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+    ctx.strokeRect(d.pos.x - 7, d.pos.y - 7, 14, 14);
+  }
+}
+// 俘虜（未釋放）：青色圈 + 柵欄記號（受迷霧遮蔽，門後看不到）
+function drawPrisoners() {
+  for (const pr of (prisoners || [])) {
+    if (pr.freed) continue;
+    const pulse = 0.5 + 0.5 * Math.sin(simTime * 4);
+    ctx.strokeStyle = `rgba(120,220,200,${0.5 + pulse * 0.4})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(pr.pos.x, pr.pos.y, 11, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#7fe3c0'; ctx.beginPath(); ctx.arc(pr.pos.x, pr.pos.y, 5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(120,220,200,0.5)'; ctx.lineWidth = 1;
+    for (let gx = -8; gx <= 8; gx += 4) { ctx.beginPath(); ctx.moveTo(pr.pos.x + gx, pr.pos.y - 9); ctx.lineTo(pr.pos.x + gx, pr.pos.y + 9); ctx.stroke(); }
+  }
+}
+function drawUnitBody(u, fill, ringColor, ringW) {
+  ctx.strokeStyle = ringColor; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(u.pos.x, u.pos.y);
+  ctx.lineTo(u.pos.x + Math.cos(u.facing) * (u.radius + 8), u.pos.y + Math.sin(u.facing) * (u.radius + 8)); ctx.stroke();
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(u.pos.x, u.pos.y, u.radius, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = ringColor; ctx.lineWidth = ringW; ctx.beginPath(); ctx.arc(u.pos.x, u.pos.y, u.radius, 0, Math.PI * 2); ctx.stroke();
+  if (u.muzzle > 0) { ctx.fillStyle = 'rgba(255,230,150,0.9)'; ctx.beginPath(); ctx.arc(u.pos.x + Math.cos(u.facing) * (u.radius + 4), u.pos.y + Math.sin(u.facing) * (u.radius + 4), 4, 0, Math.PI * 2); ctx.fill(); }
+}
+function drawPlayers() {
+  for (const p of players) {
+    if (p.state === 'DEAD' || p.state === 'EXTRACTED') continue;
+    const controlled = (p.state === 'CONTROLLED');
+    const low = p.hp / p.maxHp <= CONFIG.lowHpFrac;
+    if (low) { const a = 0.35 + 0.35 * Math.sin(simTime * 16); ctx.strokeStyle = `rgba(255,60,60,${a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.pos.x, p.pos.y, p.radius + 8, 0, Math.PI * 2); ctx.stroke(); }
+    if (controlled) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.pos.x, p.pos.y, p.radius + 5, 0, Math.PI * 2); ctx.stroke(); }
+    drawUnitBody(p, hsl(p.hue, 55, controlled ? 62 : 48), controlled ? '#ffffff' : hsl(p.hue, 60, 75), controlled ? 3 : 2);
+  }
+}
+function drawEnemies() {
+  for (const e of enemies) {
+    if (e.dead) continue;
+    const low = e.hp / e.maxHp <= 0.4, hue = e.isReinforce ? 18 : 0;
+    drawUnitBody(e, hsl(hue, 65, low ? 38 : 48), hsl(hue, 70, 65), 2);
+  }
+}
+function drawDebug() {
+  ctx.font = '10px Consolas'; ctx.textAlign = 'center';
+  for (const n of MAP.waypoints) {
+    ctx.fillStyle = '#8aa'; ctx.fillText(`#${n.id} ${n.tags.join(',')}`, n.pos.x, n.pos.y - 8);
+    if (reservations.has(n.id)) { ctx.strokeStyle = '#ffcf5a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(n.pos.x, n.pos.y, 9, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = '#ffcf5a'; ctx.fillText(`R:E${reservations.get(n.id)}`, n.pos.x, n.pos.y + 16); }
+  }
+  for (const e of enemies) {
+    if (e.dead) continue;
+    ctx.strokeStyle = e.personalityName === 'rusher' ? 'rgba(255,80,80,0.5)' : 'rgba(255,180,80,0.5)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(e.pos.x, e.pos.y); ctx.lineTo(wp(e.targetNode).pos.x, wp(e.targetNode).pos.y); ctx.stroke();
+    ctx.fillStyle = e.state === 'ENGAGED' ? '#ff7d7d' : '#7fd0a0';
+    ctx.fillText(`${e.state === 'ENGAGED' ? '⚔' : 'z'}${e.personalityName[0].toUpperCase()}→${e.targetNode}`, e.pos.x, e.pos.y - e.radius - 14);
+  }
+  ctx.textAlign = 'left';
+}
+
+/* ---- 戰爭迷霧：在全屏霧層上以 destination-out 挖出視錐+近身圈 ---- */
+function visionPolygon(u) {
+  const half = CONFIG.vision.coneHalfDeg * Math.PI / 180, rays = CONFIG.vision.fanRays;
+  const poly = [{ x: u.pos.x, y: u.pos.y }];
+  for (let i = 0; i <= rays; i++) { const ang = u.facing - half + (2 * half) * (i / rays); poly.push(rayHit(u.pos, ang, CONFIG.vision.coneMax)); }
+  return poly;
+}
+function drawFog() {
+  // 在離屏 canvas 上做「不透明霧 → destination-out 挖出可見孔洞」，再整層貼回主畫布。
+  // 如此可見孔洞露出的是主畫布上的世界（牆/敵人/子彈/單位），重疊的視錐也不會互相補回霧。
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  fctx.globalCompositeOperation = 'source-over'; fctx.globalAlpha = 1;
+  fctx.fillStyle = CONFIG.fog.color; fctx.fillRect(0, 0, cv.width, cv.height);
+  fctx.globalCompositeOperation = 'destination-out'; fctx.fillStyle = '#000';
+  for (const p of activePlayers()) {
+    const c = w2s(p.pos);
+    fctx.beginPath(); fctx.arc(c.x, c.y, p.senseRadius * cam.scale, 0, Math.PI * 2); fctx.fill();   // 近身圈
+    const poly = visionPolygon(p);                                                                  // 視錐
+    fctx.beginPath(); const s0 = w2s(poly[0]); fctx.moveTo(s0.x, s0.y);
+    for (let i = 1; i < poly.length; i++) { const s = w2s(poly[i]); fctx.lineTo(s.x, s.y); }
+    fctx.closePath(); fctx.fill();
+  }
+  fctx.globalCompositeOperation = 'source-over';
+  ctx.drawImage(fogCanvas, 0, 0);
+}
+function drawSkeleton() {
+  ctx.globalAlpha = CONFIG.fog.skeletonAlpha;
+  ctx.strokeStyle = '#9fb3c8'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  for (const w of MAP.walls) { ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke(); }
+  ctx.strokeStyle = '#caa05a'; for (const d of MAP.doors) { if (d.open) continue; ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke(); }  // 關門也給空間參考
+  ctx.strokeStyle = '#7d96b0'; ctx.lineWidth = 3; for (const lw of MAP.lowWalls) { ctx.beginPath(); ctx.moveTo(lw.x1, lw.y1); ctx.lineTo(lw.x2, lw.y2); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+}
+
+/* ---- 螢幕層覆蓋：血條 / 單位標記 / 區域標記（皆保持正立）---- */
+function screenBar(s, frac, col, yoff) {
+  const w = 30, h = 4, x = s.x - w / 2, y = s.y + yoff;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+  ctx.fillStyle = col; ctx.fillRect(x, y, w * clamp(frac, 0, 1), h);
+}
+function edgeMarker(worldPos, color, label, filled) {
+  const m = 24; let s = w2s(worldPos);
+  const onScreen = s.x >= m && s.x <= cv.width - m && s.y >= m && s.y <= cv.height - m;
+  const x = clamp(s.x, m, cv.width - m), y = clamp(s.y, m, cv.height - m);
+  ctx.fillStyle = color; ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(x, y, onScreen ? 5 : 8, 0, Math.PI * 2); filled ? ctx.fill() : ctx.stroke();
+  if (label) { ctx.font = 'bold 11px Consolas'; ctx.textAlign = 'center'; ctx.fillText(label, x, y - 11); ctx.textAlign = 'left'; }
+  return onScreen;
+}
+function drawScreenOverlays() {
+  // 區域標記（永遠正立、離場時夾到邊緣）
+  const reinforcing = simTime > curTimeBudget;
+  edgeMarker(EXTRACT, '#5fd06b', 'EXTRACT', false);
+  edgeMarker(ENTRY, reinforcing ? '#ff5d5d' : '#caa05a', reinforcing ? 'INBOUND' : 'ENTRY', false);
+
+  // 我方單位：血條 + 編號（永遠可見）
+  for (const p of activePlayers()) {
+    const s = w2s(p.pos), low = p.hp / p.maxHp <= CONFIG.lowHpFrac;
+    let col = p.hp / p.maxHp > 0.6 ? '#5fd06b' : low ? '#ff4d4d' : '#e0c24a';
+    if (low && Math.sin(simTime * 18) > 0) col = '#ffffff';
+    screenBar(s, p.hp / p.maxHp, col, -p.radius * cam.scale - 12);
+    if (p.reloadT > 0) screenBar(s, 1 - p.reloadT / (p.reloadDur || p.weapon.reloadTime), '#7fa8ff', -p.radius * cam.scale - 6);
+    ctx.font = 'bold 10px Consolas'; ctx.textAlign = 'center';
+    ctx.fillStyle = (p.state === 'CONTROLLED') ? '#ffffff' : hsl(p.hue, 60, 72);
+    let tag = `${p.id + 1}`; if (p.state === 'EXTRACTING') tag += '→EXT'; if (low) tag += ' LOW';
+    ctx.fillText(tag, s.x, s.y + p.radius * cam.scale + 14);
+    ctx.textAlign = 'left';
+    // 離場(畫面外)的我方 → 邊緣箭頭
+    edgeMarker(p.pos, hsl(p.hue, 60, 65), null, true);
+  }
+  // 被看到的敵人：血條
+  for (const e of enemies) {
+    if (e.dead) continue;
+    if (!debugView && !isRevealed(e)) continue;
+    const s = w2s(e.pos);
+    screenBar(s, e.hp / e.maxHp, '#ff6b6b', -e.radius * cam.scale - 10);
+  }
+  // 砲塔準星（沿被附身單位 facing；另畫一條較淡的目標朝向線顯示轉向延遲）
+  if (controlledId != null && players[controlledId].state === 'CONTROLLED') {
+    const u = players[controlledId], s = w2s(u.pos);
+    const r1 = u.radius * cam.scale + 6;
+    const da = aimDir + cam.angle;     // 滑鼠目標朝向（螢幕角）
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(s.x + Math.cos(da) * r1, s.y + Math.sin(da) * r1); ctx.lineTo(s.x + Math.cos(da) * 120, s.y + Math.sin(da) * 120); ctx.stroke();
+    const sa = u.facing + cam.angle;   // 砲塔現朝向（螢幕角）= 子彈方向
+    ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(s.x + Math.cos(sa) * r1, s.y + Math.sin(sa) * r1); ctx.lineTo(s.x + Math.cos(sa) * 84, s.y + Math.sin(sa) * 84); ctx.stroke();
+    ctx.beginPath(); ctx.arc(s.x + Math.cos(sa) * 96, s.y + Math.sin(sa) * 96, 4, 0, Math.PI * 2); ctx.stroke();
+    if (u.sprinting) {
+      ctx.fillStyle = 'rgba(127,227,255,0.9)'; ctx.font = 'bold 11px Consolas'; ctx.textAlign = 'center';
+      ctx.fillText(`▸▸ SPRINT x${sprintMult(u).toFixed(2)}`, s.x, s.y - u.radius * cam.scale - 26);
+      ctx.textAlign = 'left';
+    }
+    // 互動提示（在範圍內的門/按鈕/俘虜上方）
+    const it = nearestInteractable(u);
+    if (it) {
+      const wpos = it.type === 'door' ? doorMid(it.door) : it.type === 'button' ? { x: it.button.x, y: it.button.y } : it.prisoner.pos;
+      const ips = w2s(wpos);
+      const label = it.type === 'button' ? 'E：啟動按鈕' : it.type === 'prisoner' ? 'E：釋放俘虜' : (it.door.open ? 'E：關門' : 'E：開門');
+      ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center';
+      const tw = ctx.measureText(label).width + 12;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(ips.x - tw / 2, ips.y - 30, tw, 18);
+      ctx.fillStyle = '#ffe08a'; ctx.fillText(label, ips.x, ips.y - 17);
+      ctx.textAlign = 'left';
+    }
+  }
+}
+
+/* ---- HUD（螢幕層）---- */
+function drawHUD() {
+  // 關卡數（左上）；名冊改以底部單位卡片呈現
+  ctx.textAlign = 'left'; ctx.font = 'bold 14px Consolas'; ctx.fillStyle = '#9fb3c8';
+  ctx.fillText(`MISSION ${missionIndex + 1}`, 16, 24);
+
+  // 計時器（上中）
+  ctx.textAlign = 'center';
+  const remain = curTimeBudget - simTime;
+  if (remain > 0) {
+    ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas';
+    ctx.fillText(`TIME ${simTime.toFixed(1)} / ${curTimeBudget}s`, cv.width / 2, 26);
+    const bw = 320, bx = cv.width / 2 - bw / 2;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(bx, 34, bw, 6);
+    ctx.fillStyle = remain < 15 ? '#e0c24a' : '#7fe3ff'; ctx.fillRect(bx, 34, bw * clamp(simTime / curTimeBudget, 0, 1), 6);
+  } else {
+    const blink = Math.sin(simTime * 8) > 0;
+    ctx.fillStyle = blink ? '#ff5d5d' : '#ff9b5a'; ctx.font = 'bold 18px Consolas';
+    ctx.fillText(`⚠ REINFORCEMENTS INBOUND  (+${(simTime - curTimeBudget).toFixed(0)}s)`, cv.width / 2, 30);
+  }
+
+  // 計數（右上）
+  ctx.textAlign = 'right'; ctx.font = '13px Consolas'; ctx.fillStyle = '#cdd6e0';
+  ctx.fillText(`EXTRACTED ${extractedCount}   ON FIELD ${activePlayers().length}   DEAD ${deadCount}   ENEMIES ${enemies.filter(e => !e.dead).length}`, cv.width - 16, 22);
+  if (drops.length || backpack.length) { ctx.fillStyle = '#ffe08a'; ctx.fillText(`BACKPACK ${backpack.length}${drops.length ? `   · 地上 ${drops.length} 件可撿` : ''}`, cv.width - 16, 40); }
+
+  // 滑鼠未鎖定＝戰鬥暫停中
+  if (!pointerLocked) {
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(cv.width / 2 - 210, cv.height / 2 - 24, 420, 48);
+    ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 17px Consolas'; ctx.fillText('▶ 點擊畫面鎖定滑鼠以開始 / 繼續', cv.width / 2, cv.height / 2 - 2);
+    ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '12px Consolas'; ctx.fillText('（滑鼠移動=轉向 · Esc=暫停）', cv.width / 2, cv.height / 2 + 18);
+  }
+
+  // 控制提示（卡片帶上方）
+  ctx.textAlign = 'center'; ctx.font = '11px Consolas'; ctx.fillStyle = 'rgba(205,214,224,0.55)';
+  ctx.fillText('滑鼠=轉向 · 左鍵開火 · 右鍵/空白=技能 · WASD 移動 · Shift 奔跑 · R 換彈 · E 互動(開關門/按鈕) · 1/2/3 附身 · F 撤離 · 走過掉落物=撿', cv.width / 2, cv.height - 94);
+  if (debugView || !hysteresisOn) {
+    ctx.fillStyle = hysteresisOn ? '#7fe3ff' : '#ff9b5a';
+    ctx.fillText(`hysteresis: ${hysteresisOn ? 'ON' : 'OFF (觀察抖動)'}    debug(無迷霧): ${debugView ? 'ON' : 'OFF'}`, cv.width / 2, cv.height - 108);
+  }
+  ctx.textAlign = 'left';
+}
+
+/* ---- 底部單位卡片：名稱 / 生命 / 武器 / 彈夾·備彈 / 技能CD ---- */
+function drawCards() {
+  const n = players.length, cw = 196, ch = 84, gap = 10;
+  const totalW = n * cw + (n - 1) * gap;
+  const x0 = (cv.width - totalW) / 2, y0 = cv.height - ch - 6;
+  for (let i = 0; i < n; i++) drawCard(players[i], x0 + i * (cw + gap), y0, cw, ch, i);
+}
+function drawCard(p, x, y, w, h, i) {
+  const ctrl = (p.state === 'CONTROLLED');
+  const inactive = (p.state === 'DEAD' || p.state === 'EXTRACTED');
+  const pad = 9, bw = w - 2 * pad, bx = x + pad;
+  // 面板
+  ctx.fillStyle = ctrl ? 'rgba(42,52,66,0.94)' : 'rgba(18,24,32,0.86)';
+  ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = ctrl ? 2.5 : 1;
+  ctx.strokeStyle = inactive ? 'rgba(120,130,140,0.35)' : (ctrl ? '#ffffff' : hsl(p.hue, 50, 55, 0.85));
+  ctx.strokeRect(x, y, w, h);
+
+  // 名稱 + 編號 + 狀態
+  ctx.textAlign = 'left'; ctx.font = 'bold 13px Consolas';
+  ctx.fillStyle = inactive ? '#7a828c' : (ctrl ? '#ffffff' : hsl(p.hue, 60, 74));
+  ctx.fillText(`[${i + 1}] ${p.name}`, bx, y + 15);
+  ctx.textAlign = 'right'; ctx.font = '9px Consolas';
+  ctx.fillStyle = p.state === 'EXTRACTED' ? '#5fd06b' : p.state === 'DEAD' ? '#8a6a6a' : 'rgba(205,214,224,0.65)';
+  ctx.fillText(p.state === 'EXTRACTED' ? 'EXTRACTED' : p.state === 'EXTRACTING' ? 'EXTRACTING' : p.state, x + w - pad, y + 14);
+
+  // 個性 archetype（盯哨可靠度色提示）
+  const arch = p.archetype;
+  ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas';
+  ctx.fillStyle = inactive ? '#6a727c' : TIER_COLOR[arch.tier];
+  ctx.fillText(arch.name, bx, y + 29);
+
+  // 生命
+  const hpFrac = clamp(p.hp / p.maxHp, 0, 1), low = hpFrac <= CONFIG.lowHpFrac && !inactive;
+  const by = y + 35;
+  ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(bx, by, bw, 7);
+  let hpcol = inactive ? '#3a424c' : hpFrac > 0.6 ? '#5fd06b' : low ? '#ff4d4d' : '#e0c24a';
+  if (low && Math.sin(simTime * 18) > 0) hpcol = '#ffffff';
+  ctx.fillStyle = hpcol; ctx.fillRect(bx, by, bw * hpFrac, 7);
+  ctx.textAlign = 'right'; ctx.font = '8px Consolas'; ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  if (!inactive) ctx.fillText(`${Math.max(0, Math.ceil(p.hp))}`, bx + bw - 2, by + 6);
+
+  // 武器 + 彈藥
+  const W = p.weapon;
+  ctx.beginPath(); ctx.fillStyle = rarityColor(W.rarity); ctx.arc(bx + 3, y + 56, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.textAlign = 'left'; ctx.font = '11px Consolas';
+  ctx.fillStyle = inactive ? '#6a727c' : '#cdd6e0'; ctx.fillText(`${W.name} 重${W.weight}`, bx + 11, y + 59);
+  ctx.textAlign = 'right'; ctx.font = '11px Consolas';
+  if (p.reloadT > 0 && !inactive) {
+    ctx.fillStyle = '#7fa8ff'; ctx.fillText('RELOAD', x + w - pad, y + 59);
+  } else {
+    ctx.fillStyle = inactive ? '#6a727c' : (p.ammoInMag <= 5 ? '#ff7d7d' : '#cdd6e0');
+    ctx.fillText(`${p.ammoInMag}/${p.magazine || W.magazine} (${p.ammoReserve})`, x + w - pad, y + 59);
+  }
+  // 裝備（持續）/ 道具（一次性，按 Q；用過或無＝灰）右上小字
+  if (!inactive) {
+    ctx.textAlign = 'right'; ctx.font = '8px Consolas';
+    ctx.fillStyle = p.equipId ? '#9fd0e0' : '#4a525c'; ctx.fillText('🛡' + (p.equipId ? EQUIPMENT[p.equipId].name : '—'), x + w - pad, y + 27);
+    ctx.fillStyle = (p.itemId && !p.itemUsed) ? '#ffd27d' : '#4a525c'; ctx.fillText('Q ' + (p.itemId && !p.itemUsed ? ITEMS[p.itemId].name : (p.itemId ? '用過' : '—')), x + w - pad, y + 38);
+    ctx.textAlign = 'left';
+  }
+
+  // 技能 + 冷卻
+  ctx.textAlign = 'left'; ctx.font = '11px Consolas';
+  ctx.fillStyle = inactive ? '#6a727c' : '#cdd6e0';
+  ctx.fillText(`SK:${p.ability ? p.ability.name : '—'}`, bx, y + 76);
+  if (p.ability && !inactive) {
+    const sbw = 64, sbx = x + w - pad - sbw, sby = y + 69;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(sbx, sby, sbw, 8);
+    const cdFrac = 1 - clamp(p.abilityCd / p.ability.cooldown, 0, 1);
+    ctx.fillStyle = p.abilityCd > 0 ? '#5a7fb0' : '#5fd0c0'; ctx.fillRect(sbx, sby, sbw * cdFrac, 8);
+    ctx.textAlign = 'right'; ctx.font = '8px Consolas'; ctx.fillStyle = '#e8eef5';
+    ctx.fillText(p.abilityCd > 0 ? p.abilityCd.toFixed(1) + 's' : 'READY', x + w - pad - 2, sby + 7);
+  }
+  ctx.textAlign = 'left';
+}
+/* ---- 休息關畫面 ---- */
+function drawRosterCard(r, x, y, w, h, i) {
+  ctx.fillStyle = 'rgba(22,28,38,0.9)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = hsl(r.hue, 50, 55, 0.85); ctx.strokeRect(x, y, w, h);
+  const pad = 10;
+  ctx.textAlign = 'left'; ctx.font = 'bold 13px Consolas'; ctx.fillStyle = hsl(r.hue, 60, 74);
+  ctx.fillText(`[${i + 1}] ${r.name}`, x + pad, y + 18);
+  const W = WEAPONS[r.weaponId];
+  ctx.beginPath(); ctx.fillStyle = rarityColor(W.rarity); ctx.arc(x + pad + 3, y + 36, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '11px Consolas';
+  ctx.fillText(`${W.name}  ${W.rarity}`, x + pad + 12, y + 39);
+  ctx.fillStyle = '#9fb3c8'; ctx.font = '11px Consolas';
+  ctx.fillText(`HP ${CONFIG.unitHp + (r.bonusMaxHp || 0)}   感知x${r.strength.toFixed(1)}`, x + pad, y + 58);
+  const arch = ARCHETYPES[r.archetypeId];
+  ctx.fillStyle = TIER_COLOR[arch.tier]; ctx.font = 'bold 11px Consolas';
+  ctx.fillText(arch.name, x + pad, y + 72);
+  ctx.textAlign = 'left';
+}
+/* ---- 休息關：clickable rect 小工具 ---- */
+function pushRect(x, y, w, h, fn) { restRects.push({ x, y, w, h, fn }); }
+function uiButton(x, y, w, h, label, fn, opts = {}) {
+  const on = opts.enabled !== false;
+  ctx.fillStyle = on ? (opts.bg || 'rgba(54,66,84,0.95)') : 'rgba(38,44,52,0.6)';
+  ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = opts.lw || 1.2; ctx.strokeStyle = on ? (opts.border || 'rgba(160,180,200,0.7)') : 'rgba(90,100,110,0.45)';
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = on ? (opts.fg || '#e8eef5') : '#6a727c';
+  ctx.font = opts.font || '12px Consolas'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  if (on && fn) pushRect(x, y, w, h, fn);
+}
+const restSelItem = () => (restSel && restSel.type === 'wh' && restSel.idx < warehouse.length) ? warehouse[restSel.idx] : null;
+
+/* ---- 休息關：單位配裝卡（含個性[§8]、武器、技能、彈藥分配）---- */
+function drawLoadoutCard(mi, x, y, w, h) {
+  const r = roster[mi], pad = 10, manage = (restPhase === 'CHOICE' || restPhase === 'DONE');
+  const W = WEAPONS[r.weaponId], arch = ARCHETYPES[r.archetypeId];
+  const sel = restSelItem();
+  // 面板
+  ctx.fillStyle = 'rgba(20,26,36,0.92)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = hsl(r.hue, 50, 55, 0.85); ctx.strokeRect(x, y, w, h);
+  // 名稱 + maxHP
+  ctx.textAlign = 'left'; ctx.font = 'bold 13px Consolas'; ctx.fillStyle = hsl(r.hue, 60, 74);
+  ctx.fillText(`[${mi + 1}] ${r.name}`, x + pad, y + 18);
+  ctx.textAlign = 'right'; ctx.font = '11px Consolas'; ctx.fillStyle = '#9fb3c8';
+  ctx.fillText(`HP ${CONFIG.unitHp + (r.bonusMaxHp || 0)}`, x + w - pad, y + 18);
+  // 個性（§8：配槍前先看覆蓋力）
+  const disc = r.disciplineOverride || arch.discipline;
+  ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas'; ctx.fillStyle = TIER_COLOR[arch.tier];
+  ctx.fillText(arch.name, x + pad, y + 36);
+  ctx.font = '10px Consolas'; ctx.fillStyle = '#8b97a5';
+  ctx.fillText(`${arch.facing}/${disc}${r.disciplineOverride ? '*' : ''} · 感知x${r.strength.toFixed(1)}`, x + pad + 4 + ctx.measureText(arch.name).width + 8, y + 36);
+
+  // 一格一列：選到相容倉庫物時整列可點＝裝備；▸倉＝卸下
+  const row = (yt, hi, tint, label, targetable, equipFn, unequipFn, canUnequip) => {
+    if (targetable) { ctx.fillStyle = tint; ctx.fillRect(x + 4, yt, w - 8, 20); }
+    ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0'; ctx.fillText(label, x + pad, yt + 14);
+    if (manage) {
+      if (targetable) pushRect(x + 4, yt, w - 50, 20, equipFn);
+      if (canUnequip) uiButton(x + w - 44, yt + 1, 36, 17, '▸倉', unequipFn, { font: '10px Consolas' });
+    }
+  };
+  // 武器
+  if (manage && sel && sel.kind === 'weapon') { ctx.fillStyle = 'rgba(95,208,107,0.12)'; ctx.fillRect(x + 4, y + 44, w - 8, 20); }
+  ctx.beginPath(); ctx.fillStyle = rarityColor(W.rarity); ctx.arc(x + pad + 3, y + 54, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0'; ctx.fillText(`${W.name} 重${W.weight}`, x + pad + 11, y + 58);
+  if (manage) {
+    if (sel && sel.kind === 'weapon') pushRect(x + 4, y + 44, w - 50, 20, () => equipWeaponFromWarehouse(restSel.idx, mi));
+    if (!isInfiniteAmmo(r.weaponId)) uiButton(x + w - 44, y + 45, 36, 17, '▸倉', () => unequipWeapon(mi), { font: '10px Consolas' });
+  }
+  row(y + 66, 20, 'rgba(192,160,255,0.14)', `SK ${r.abilityId ? ABILITIES[r.abilityId].name : '—'}`, manage && sel && sel.kind === 'ability',
+    () => equipAbilityFromWarehouse(restSel.idx, mi), () => unequipAbility(mi), !!r.abilityId);
+  row(y + 88, 20, 'rgba(159,208,224,0.16)', `🛡 ${r.equipId ? EQUIPMENT[r.equipId].name : '—'}`, manage && sel && sel.kind === 'equip',
+    () => equipGearFromWarehouse(restSel.idx, mi, 'equip', 'equipId'), () => unequipGear(mi, 'equip', 'equipId'), !!r.equipId);
+  row(y + 110, 20, 'rgba(255,210,125,0.16)', `Q ${r.itemId ? ITEMS[r.itemId].name : '—'}`, manage && sel && sel.kind === 'item',
+    () => equipGearFromWarehouse(restSel.idx, mi, 'item', 'itemId'), () => unequipGear(mi, 'item', 'itemId'), !!r.itemId);
+  // 彈藥分配（pistol 無限）
+  ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0';
+  if (isInfiniteAmmo(r.weaponId)) {
+    ctx.fillText('彈 ∞（底線武器）', x + pad, y + 148);
+  } else {
+    ctx.fillText(`彈 ${r.allocatedAmmo}  儲備 ${ammoStock[r.weaponId] | 0}`, x + pad, y + 148);
+    if (manage) {
+      uiButton(x + w - 76, y + 136, 22, 17, '−', () => allocAmmo(mi, -1), { font: 'bold 13px Consolas', enabled: r.allocatedAmmo > 0 });
+      uiButton(x + w - 30, y + 136, 22, 17, '+', () => allocAmmo(mi, +1), { font: 'bold 13px Consolas', enabled: (ammoStock[r.weaponId] | 0) > 0 });
+    }
+  }
+  // TARGET 階段：整卡＝指派目標
+  if (restPhase === 'TARGET') {
+    ctx.fillStyle = 'rgba(255,210,125,0.10)'; ctx.fillRect(x, y, w, h);
+    ctx.lineWidth = 2; ctx.strokeStyle = '#ffd27d'; ctx.strokeRect(x, y, w, h);
+    ctx.textAlign = 'center'; ctx.font = 'bold 12px Consolas'; ctx.fillStyle = '#ffd27d';
+    ctx.fillText('▶ 點此指派', x + w / 2, y + h - 8);
+    pushRect(x, y, w, h, () => applyTarget(mi));
+  }
+  ctx.textAlign = 'left';
+}
+
+/* ---- 休息關：倉庫格 ---- */
+function drawRestWarehouse(wy) {
+  const manage = (restPhase === 'CHOICE' || restPhase === 'DONE');
+  const cap = warehouseCap(), used = warehouseUsed(), over = overCap();
+  ctx.textAlign = 'left'; ctx.font = 'bold 13px Consolas'; ctx.fillStyle = over ? '#ff8a8a' : '#cdd6e0';
+  ctx.fillText(`共用倉庫  ${used}/${cap}${over ? '  ⚠ 超過上限，請丟棄' : ''}`, 140, wy - 8);
+  ctx.font = '10px Consolas'; ctx.fillStyle = '#7a8696';
+  ctx.fillText(CONFIG.loadout.abilitiesCountTowardCap ? '（武器與技能皆佔格）' : '（僅武器佔格）', 140 + 220, wy - 8);
+  const cw = 56, ch = 56, gap = 8, perRow = 16, slots = Math.max(cap, warehouse.length);
+  const startX = (cv.width - (perRow * cw + (perRow - 1) * gap)) / 2;
+  for (let s = 0; s < slots; s++) {
+    const col = s % perRow, row = Math.floor(s / perRow);
+    const x = startX + col * (cw + gap), y = wy + row * (ch + gap);
+    const it = warehouse[s];
+    const selected = restSel && restSel.type === 'wh' && restSel.idx === s;
+    const beyond = s >= cap;   // 超過上限的格（紅框警示）
+    ctx.fillStyle = it ? 'rgba(30,38,50,0.95)' : 'rgba(16,20,28,0.6)';
+    ctx.fillRect(x, y, cw, ch);
+    ctx.lineWidth = selected ? 2.5 : 1.2;
+    ctx.strokeStyle = selected ? '#ffffff' : (beyond && it ? '#ff6b6b' : 'rgba(120,140,160,0.4)');
+    ctx.strokeRect(x, y, cw, ch);
+    if (it) {
+      const meta = it.kind === 'weapon' ? { name: WEAPONS[it.id].name, tag: '武器', col: rarityColor(WEAPONS[it.id].rarity), dot: true }
+        : it.kind === 'ability' ? { name: ABILITIES[it.id].name, tag: '技能', col: '#c0a0ff' }
+          : it.kind === 'equip' ? { name: EQUIPMENT[it.id].name, tag: '裝備', col: '#9fd0e0' }
+            : { name: ITEMS[it.id].name, tag: '道具', col: '#ffd27d' };
+      if (meta.dot) { ctx.beginPath(); ctx.fillStyle = meta.col; ctx.arc(x + 8, y + 9, 3.5, 0, Math.PI * 2); ctx.fill(); }
+      ctx.textAlign = 'center'; ctx.font = '10px Consolas'; ctx.fillStyle = meta.dot ? '#dde6ef' : meta.col;
+      ctx.fillText(meta.name, x + cw / 2, y + 30); ctx.font = '8px Consolas'; ctx.fillStyle = '#8b97a5'; ctx.fillText(meta.tag, x + cw / 2, y + 46);
+      if (manage) pushRect(x, y, cw, ch, () => { restSel = selected ? null : { type: 'wh', idx: s }; });
+    }
+  }
+  // 丟棄選取
+  if (manage) uiButton(cv.width - 150, wy - 22, 120, 20, restSelItem() ? '丟棄選取 ✕' : '（先選倉庫物）', () => { if (restSel && restSel.type === 'wh') discardWarehouse(restSel.idx); }, { enabled: !!restSelItem(), font: '11px Consolas', bg: 'rgba(90,40,40,0.9)', border: '#c66' });
+  ctx.textAlign = 'left';
+}
+
+/* ---- 休息關：底部動作列（二選一 / 繼續）+ 模態（搜刮選項 / 指定目標）---- */
+function drawRestActionBar() {
+  const ay = 596, over = overCap();
+  if (restPhase === 'CHOICE') {
+    ctx.textAlign = 'center'; ctx.font = '12px Consolas'; ctx.fillStyle = '#8b97a5';
+    ctx.fillText('二選一 — 攤開兩邊地板：「保證補給＋上限賭注」對上「保證 +1 身體（個性隨機）」。可隨時整理倉庫/配裝/分配彈藥。', cv.width / 2, ay - 16);
+    uiButton(cv.width / 2 - 320, ay, 300, 64, '', null, { bg: 'rgba(30,52,70,0.9)', border: '#7fe3ff' });
+    uiButton(cv.width / 2 + 20, ay, 300, 64, '', null, { bg: over ? 'rgba(34,40,48,0.7)' : 'rgba(30,52,42,0.9)', border: over ? '#566' : '#7fffa8' });
+    // 搜刮
+    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText('[1] 搜刮物資', cv.width / 2 - 170, ay + 24);
+    ctx.fillStyle = '#aeb9c5'; ctx.font = '11px Consolas'; ctx.fillText(`三選一 · 地板=基本補給保證`, cv.width / 2 - 170, ay + 42);
+    ctx.fillText('天花板=稀有武器/技能/質升級', cv.width / 2 - 170, ay + 57);
+    pushRect(cv.width / 2 - 320, ay, 300, 64, restDoScavenge);
+    // 喚醒
+    ctx.fillStyle = over ? '#6a727c' : '#7fffa8'; ctx.font = 'bold 15px Consolas'; ctx.fillText('[2] 喚醒 Sleeper', cv.width / 2 + 170, ay + 24);
+    ctx.fillStyle = over ? '#6a727c' : '#aeb9c5'; ctx.font = '11px Consolas';
+    ctx.fillText('保證 +1 隊員（個性隨機）', cv.width / 2 + 170, ay + 42);
+    ctx.fillText(over ? '需先整理倉庫至 ≤ 上限' : '容量 +' + CONFIG.loadout.slotsPerMember, cv.width / 2 + 170, ay + 57);
+    if (!over) pushRect(cv.width / 2 + 20, ay, 300, 64, restDoAwaken);
+  } else if (restPhase === 'DONE') {
+    ctx.textAlign = 'center'; ctx.font = 'bold 15px Consolas'; ctx.fillStyle = '#5fd06b';
+    ctx.fillText('✓ ' + restMsg, cv.width / 2, ay + 16);
+    if (over) { ctx.font = '12px Consolas'; ctx.fillStyle = '#ff8a8a'; ctx.fillText(`倉庫超過上限（${warehouseUsed()}/${warehouseCap()}），請丟棄後才能繼續`, cv.width / 2, ay + 40); }
+    uiButton(cv.width / 2 - 110, ay + 50, 220, 36, '深入下一關 ▶', restDoContinue, { enabled: !over, font: 'bold 15px Consolas', bg: over ? 'rgba(34,40,48,0.7)' : 'rgba(40,60,46,0.95)', border: over ? '#566' : '#7fffa8', fg: over ? '#6a727c' : '#dfffe8' });
+  }
+  ctx.textAlign = 'left';
+}
+function drawRestOffers() {
+  ctx.fillStyle = 'rgba(4,6,10,0.78)'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 22px Consolas';
+  ctx.fillText('搜刮 · 三選一', cv.width / 2, 250);
+  const n = restOffers.length, bw = 360, bh = 84, gap = 18;
+  const totalH = n * bh + (n - 1) * gap, y0 = cv.height / 2 - totalH / 2 + 20;
+  for (let i = 0; i < n; i++) {
+    const o = restOffers[i], y = y0 + i * (bh + gap), x = cv.width / 2 - bw / 2;
+    ctx.fillStyle = 'rgba(24,30,40,0.97)'; ctx.fillRect(x, y, bw, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = o.color; ctx.strokeRect(x, y, bw, bh);
+    ctx.textAlign = 'left'; ctx.font = 'bold 14px Consolas'; ctx.fillStyle = o.color;
+    ctx.fillText(`[${i + 1}]`, x + 14, y + 30);
+    ctx.fillStyle = '#e8eef5'; ctx.font = '13px Consolas'; ctx.fillText(o.label, x + 48, y + 30);
+    if (o.needTarget) { ctx.fillStyle = '#8b97a5'; ctx.font = '11px Consolas'; ctx.fillText('（選擇後需指定成員）', x + 48, y + 54); }
+    pushRect(x, y, bw, bh, () => pickOffer(i));
+  }
+  ctx.textAlign = 'left';
+}
+// 軍械庫節點畫面（獨立場景；三選一）
+function drawArmory() {
+  restRects = [];
+  ctx.fillStyle = '#0b0f15'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#e0c24a'; ctx.font = 'bold 30px Consolas'; ctx.fillText('ARMORY · 軍械庫', cv.width / 2, 92);
+  ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '14px Consolas'; ctx.fillText('三選一（不進戰鬥、不耗時）→ 入共用倉庫', cv.width / 2, 120);
+  const n = armoryOffers.length, bw = 440, bh = 88, gap = 18, totalH = n * bh + (n - 1) * gap, y0 = cv.height / 2 - totalH / 2 + 10;
+  for (let i = 0; i < n; i++) {
+    const o = armoryOffers[i], y = y0 + i * (bh + gap), x = cv.width / 2 - bw / 2;
+    ctx.fillStyle = 'rgba(24,30,40,0.97)'; ctx.fillRect(x, y, bw, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = o.color; ctx.strokeRect(x, y, bw, bh);
+    ctx.textAlign = 'left'; ctx.font = 'bold 16px Consolas'; ctx.fillStyle = o.color; ctx.fillText(`[${i + 1}]`, x + 16, y + 38);
+    ctx.fillStyle = '#e8eef5'; ctx.font = '15px Consolas'; ctx.fillText(o.label, x + 56, y + 38);
+    ctx.fillStyle = '#8b97a5'; ctx.font = '11px Consolas'; ctx.fillText('→ 共用倉庫（休息關可配裝）', x + 56, y + 62);
+    pushRect(x, y, bw, bh, () => armoryPick(i));
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawRest() {
+  restRects = [];
+  if (restSel && restSel.type === 'wh' && restSel.idx >= warehouse.length) restSel = null;
+  ctx.fillStyle = '#0b0f15'; ctx.fillRect(0, 0, cv.width, cv.height);
+  // 標題 + 戰報
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 26px Consolas'; ctx.fillText('REST · 休息關', cv.width / 2, 40);
+  if (lastSummary) {
+    ctx.font = '13px Consolas'; ctx.fillStyle = '#9fb3c8';
+    let s = `第 ${lastSummary.mission} 關肅清 · 撤出 ${lastSummary.extracted.join(', ') || '—'}`;
+    if (lastSummary.dead.length) s += ` · 陣亡 ${lastSummary.dead.join(', ')}`;
+    ctx.fillText(s, cv.width / 2, 62);
+  }
+  ctx.textAlign = 'left';
+
+  // 配裝卡（含個性/武器/技能/裝備/道具/彈藥）
+  const n = roster.length, perRow = 5, cw = 234, ch = 164, gap = 12;
+  for (let i = 0; i < n; i++) {
+    const inRow = Math.min(n - Math.floor(i / perRow) * perRow, perRow);
+    const totalW = inRow * cw + (inRow - 1) * gap;
+    const col = i % perRow, row = Math.floor(i / perRow);
+    const x = (cv.width - totalW) / 2 + col * (cw + gap), y = 84 + row * (ch + 12);
+    drawLoadoutCard(i, x, y, cw, ch);
+  }
+  drawRestWarehouse(456);
+  drawRestActionBar();
+  if (restPhase === 'OFFERS') drawRestOffers();
+  if (restPhase === 'TARGET') {
+    ctx.textAlign = 'center'; ctx.fillStyle = '#ffd27d'; ctx.font = 'bold 16px Consolas';
+    ctx.fillText('▶ 點選要套用此升級的成員（上方卡片）', cv.width / 2, 78); ctx.textAlign = 'left';
+  }
+}
+function drawRunEnd() {
+  ctx.fillStyle = 'rgba(8,10,14,0.95)'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff5d5d'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN FAILED', cv.width / 2, cv.height / 2 - 56);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '18px Consolas';
+  ctx.fillText(`全滅 — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 14);
+  ctx.fillStyle = '#9fb3c8'; ctx.font = '14px Consolas'; ctx.fillText('（撤出 0 人 = run 結束）', cv.width / 2, cv.height / 2 + 12);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, cv.height / 2 + 64);
+  ctx.textAlign = 'left';
+}
+function drawRunWin() {
+  ctx.fillStyle = 'rgba(8,14,12,0.95)'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN COMPLETE', cv.width / 2, cv.height / 2 - 56);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '18px Consolas'; ctx.fillText(`走完路線 — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 14);
+  ctx.fillStyle = '#9fb'; ctx.font = '14px Consolas'; ctx.fillText(`生還陣容: ${roster.map(r => r.name).join(', ')}`, cv.width / 2, cv.height / 2 + 12);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, cv.height / 2 + 64);
+  ctx.textAlign = 'left';
+}
+
+/* ---- 路線圖畫面 ---- */
+function drawRoadmap() {
+  ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 28px Consolas'; ctx.fillText('ROUTE · 路線圖', cv.width / 2, 56);
+  ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '13px Consolas';
+  ctx.fillText('點擊（或按數字鍵）前往發亮的節點 ▷', cv.width / 2, 80);
+  // 圖例（區分戰鬥地圖）
+  ctx.font = '12px Consolas';
+  ctx.fillStyle = hsl(8, 65, 55); ctx.fillText('⚔ 開闊區', cv.width / 2 - 290, 102);
+  ctx.fillStyle = hsl(35, 70, 58); ctx.fillText('⊟ 門禁設施', cv.width / 2 - 180, 102);
+  ctx.fillStyle = hsl(48, 75, 58); ctx.fillText('★ 軍械庫', cv.width / 2 - 20, 102);
+  ctx.fillStyle = hsl(150, 60, 55); ctx.fillText('＋ 休息', cv.width / 2 + 120, 102);
+
+  const avail = roadAvailable.filter(id => !roadCompleted.has(id));
+  // 邊
+  for (const [a, b] of ROADMAP.edges) {
+    const pa = roadNodePos(roadNode(a)), pb = roadNodePos(roadNode(b));
+    const hot = roadCompleted.has(a) || avail.includes(a) || avail.includes(b);
+    ctx.strokeStyle = hot ? 'rgba(160,190,220,0.45)' : 'rgba(120,140,160,0.14)';
+    ctx.lineWidth = hot ? 2 : 1;
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+  }
+  // 節點
+  for (const n of ROADMAP.nodes) {
+    const p = roadNodePos(n);
+    const done = roadCompleted.has(n.id), isAvail = avail.includes(n.id);
+    const hover = isAvail && Math.hypot(mouse.mx - p.x, mouse.my - p.y) <= 26;
+    const isBravo = n.type === 'COMBAT' && (n.map === 'bravo');
+    const base = n.type === 'REST' ? 150 : n.type === 'ARMORY' ? 48 : (isBravo ? 35 : 8);   // hue: 開闊紅、門禁橙、軍械庫金、休息青
+    let fill, stroke;
+    if (done) { fill = 'rgba(70,80,90,0.5)'; stroke = 'rgba(120,130,140,0.6)'; }
+    else if (isAvail) { fill = hsl(base, 65, hover ? 52 : 42); stroke = '#ffffff'; }
+    else { fill = hsl(base, 30, 22); stroke = hsl(base, 30, 35); }
+    if (isAvail) { const a = 0.4 + 0.4 * Math.sin(simTime ? simTime * 5 : 0); ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(p.x, p.y, hover ? 24 : 22, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = isAvail ? 2.5 : 1.5; ctx.strokeStyle = stroke; ctx.beginPath(); ctx.arc(p.x, p.y, hover ? 24 : 22, 0, Math.PI * 2); ctx.stroke();
+    const glyph = done ? '✓' : n.type === 'REST' ? '＋' : n.type === 'ARMORY' ? '★' : (isBravo ? '⊟' : '⚔');
+    const sub = n.type === 'REST' ? '休息' : n.type === 'ARMORY' ? '軍械庫' : MAPS[n.map || 'alpha'].label;
+    ctx.fillStyle = done ? '#aab' : '#ffffff'; ctx.font = 'bold 16px Consolas';
+    ctx.fillText(glyph, p.x, p.y + 6);
+    ctx.fillStyle = isAvail ? '#e8eef5' : 'rgba(180,190,200,0.6)'; ctx.font = '11px Consolas';
+    ctx.fillText(sub, p.x, p.y + 38);
+  }
+
+  // 現有陣容（底部）
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '13px Consolas'; ctx.textAlign = 'left'; ctx.fillText('陣容:', 24, cv.height - 92);
+  const cw = 200, gap = 10;
+  roster.slice(0, 6).forEach((r, i) => drawRosterCard(r, 24 + i * (cw + gap), cv.height - 84, cw, 76, i));
+  // 開啟關卡編輯器按鈕（右上）
+  editorBtnRect = { x: cv.width - 190, y: 18, w: 160, h: 30 };
+  ctx.fillStyle = 'rgba(40,50,64,0.95)'; ctx.fillRect(editorBtnRect.x, editorBtnRect.y, editorBtnRect.w, editorBtnRect.h);
+  ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(150,170,190,0.7)'; ctx.strokeRect(editorBtnRect.x, editorBtnRect.y, editorBtnRect.w, editorBtnRect.h);
+  ctx.fillStyle = '#dbe6f0'; ctx.font = '13px Consolas'; ctx.textAlign = 'center'; ctx.fillText('✎ 關卡編輯器', editorBtnRect.x + editorBtnRect.w / 2, editorBtnRect.y + 20);
+  ctx.textAlign = 'left';
+}
+
+/* =====================================================================
+   LEVEL EDITOR — 遊戲內視覺關卡編輯器（放置→試玩→輸出 JS 貼回 MAPS）
+   ===================================================================== */
+let editorBtnRect = null;
+const isDragTool = (t) => t === 'wall' || t === 'door' || t === 'low';
+function blankEditMap() { return { label: '新關卡', timeBudget: 0, walls: [...rectWalls(40, 40, 1240, 680)], doors: [], lowWalls: [], buttons: [], waypoints: [], edges: [], entryPoints: [{ x: 110, y: 360 }], extractionPoints: [{ x: 1190, y: 360 }], enemySpawns: [], prisoners: [] }; }
+function normalizeEdit(e) {
+  e.label = e.label || '新關卡'; if (typeof e.timeBudget !== 'number') e.timeBudget = 0;
+  for (const k of ['walls', 'doors', 'lowWalls', 'buttons', 'waypoints', 'edges', 'entryPoints', 'extractionPoints', 'enemySpawns', 'prisoners']) if (!Array.isArray(e[k])) e[k] = [];
+  if (!e.entryPoints.length) e.entryPoints = [{ x: 110, y: 360 }];
+  if (!e.extractionPoints.length) e.extractionPoints = [{ x: 1190, y: 360 }];
+  e.waypoints.forEach((w, i) => { w.id = i; if (!w.tags) w.tags = ['patrol']; if (!w.pos) w.pos = { x: 640, y: 360 }; });
+  e.doors.forEach((d, i) => { if (!d.id) d.id = 'd' + (i + 1); d.open = false; });
+  return e;
+}
+const normalizeForPlay = (e) => normalizeEdit(JSON.parse(JSON.stringify(e)));
+function editorOpen() { if (!edit) editorLoad('blank'); else normalizeEdit(edit); scene = 'EDITOR'; editDrag = null; releasePointer(); editMsg = '左鍵=放置/拖拉 · 右鍵=刪除 · 數字鍵 1‑0=切工具 · G=格線'; }
+function editorExit() { scene = 'MAP'; editDrag = null; }
+function editorLoad(key) {
+  if (key === 'blank') edit = blankEditMap();
+  else if (key === 'saved') { try { const s = localStorage.getItem('sleeper_map'); if (s) { edit = JSON.parse(s); editMsg = '已載入草稿'; } else { if (!edit) edit = blankEditMap(); editMsg = '沒有草稿'; } } catch (_) { if (!edit) edit = blankEditMap(); editMsg = '讀取草稿失敗'; } }
+  else { edit = JSON.parse(JSON.stringify(MAPS[key] || MAPS.alpha)); editMsg = '已載入 ' + key; }
+  normalizeEdit(edit); editTool = 'wall'; editDrag = null; editSelWp = null;
+}
+function snapPt(p) { const s = editSnap || 0; let x = p.x, y = p.y; if (s) { x = Math.round(x / s) * s; y = Math.round(y / s) * s; } return { x: clamp(x, 0, 1280), y: clamp(y, 0, 720) }; }
+const editNearestWp = (p, maxd) => { let bi = -1, bd = maxd; edit.waypoints.forEach((w, i) => { const d = dist(p, w.pos); if (d < bd) { bd = d; bi = i; } }); return bi; };
+const editNearestDoorId = (m) => { let id = null, bd = 80; for (const d of edit.doors) { const dd = dist(m, closestOnSeg(m, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 })); if (dd < bd) { bd = dd; id = d.id; } } return id; };
+function toggleEdge(a, b) { const k = edit.edges.findIndex(([x, y]) => (x === a && y === b) || (x === b && y === a)); if (k >= 0) edit.edges.splice(k, 1); else edit.edges.push([a, b]); }
+function cycleSpawn(i) { const s = edit.enemySpawns.find(s => s.nodeId === i); if (!s) edit.enemySpawns.push({ nodeId: i, personality: 'rusher' }); else if (s.personality === 'rusher') s.personality = 'flanker'; else edit.enemySpawns = edit.enemySpawns.filter(x => x !== s); }
+function removeWaypoint(idx) {
+  edit.waypoints.splice(idx, 1);
+  edit.edges = edit.edges.filter(([a, b]) => a !== idx && b !== idx).map(([a, b]) => [a > idx ? a - 1 : a, b > idx ? b - 1 : b]);
+  edit.enemySpawns = edit.enemySpawns.filter(s => s.nodeId !== idx).map(s => ({ ...s, nodeId: s.nodeId > idx ? s.nodeId - 1 : s.nodeId }));
+  edit.waypoints.forEach((w, i) => w.id = i); editSelWp = null;
+}
+function editorClickAt(m) {
+  const t = editTool;
+  if (t === 'wp') edit.waypoints.push({ id: edit.waypoints.length, pos: { x: m.x, y: m.y }, tags: [editTagBrush] });
+  else if (t === 'edge') { const i = editNearestWp(m, 26); if (i < 0) { editSelWp = null; return; } if (editSelWp == null) editSelWp = i; else if (editSelWp !== i) { toggleEdge(editSelWp, i); editSelWp = null; } else editSelWp = null; }
+  else if (t === 'spawn') { const i = editNearestWp(m, 26); if (i >= 0) cycleSpawn(i); }
+  else if (t === 'button') edit.buttons.push({ id: 'b' + (edit.buttons.length + 1), x: m.x, y: m.y, doorId: editNearestDoorId(m) });
+  else if (t === 'prisoner') edit.prisoners.push({ x: m.x, y: m.y });
+  else if (t === 'entry') edit.entryPoints = [{ x: m.x, y: m.y }];
+  else if (t === 'extract') edit.extractionPoints = [{ x: m.x, y: m.y }];
+  else if (t === 'erase') editorEraseAt(m);
+}
+function editorCommitSeg(a, b) {
+  if (editTool === 'wall') edit.walls.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+  else if (editTool === 'door') edit.doors.push({ id: 'd' + (edit.doors.length + 1), x1: a.x, y1: a.y, x2: b.x, y2: b.y, open: false });
+  else if (editTool === 'low') edit.lowWalls.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+}
+function editorEraseAt(m) {
+  let i = editNearestWp(m, 16); if (i >= 0) { removeWaypoint(i); return; }
+  i = edit.prisoners.findIndex(p => dist(m, { x: p.x, y: p.y }) < 14); if (i >= 0) { edit.prisoners.splice(i, 1); return; }
+  i = edit.buttons.findIndex(b => dist(m, { x: b.x, y: b.y }) < 14); if (i >= 0) { edit.buttons.splice(i, 1); return; }
+  const near = (arr) => arr.findIndex(s => dist(m, closestOnSeg(m, { x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 })) < 10);
+  i = near(edit.doors); if (i >= 0) { edit.doors.splice(i, 1); return; }
+  i = near(edit.lowWalls); if (i >= 0) { edit.lowWalls.splice(i, 1); return; }
+  i = near(edit.walls); if (i >= 0) { edit.walls.splice(i, 1); return; }
+}
+function editorValidate() {
+  const e = edit, issues = [];
+  if (e.waypoints.length < 1) issues.push('需要 ≥1 個 waypoint');
+  if (!e.entryPoints.length) issues.push('缺進場點'); if (!e.extractionPoints.length) issues.push('缺撤離點');
+  let xcross = 0;
+  for (const [a, b] of e.edges) { const A = e.waypoints[a], B = e.waypoints[b]; if (!A || !B) continue; for (const lw of e.lowWalls) if (segIntersect(A.pos, B.pos, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 })) xcross++; }
+  if (xcross) issues.push(xcross + ' 條敵人邊穿過低矮牆(會卡牆)');
+  if (e.waypoints.length && e.entryPoints.length && e.extractionPoints.length) {
+    const near = (p) => { let bi = -1, bd = Infinity; e.waypoints.forEach((w, i) => { const d = dist(p, w.pos); if (d < bd) { bd = d; bi = i; } }); return bi; };
+    const en = near(e.entryPoints[0]), ex = near(e.extractionPoints[0]);
+    const adjL = e.waypoints.map(() => []); for (const [a, b] of e.edges) { if (adjL[a] && adjL[b]) { adjL[a].push(b); adjL[b].push(a); } }
+    const seen = new Set([en]), q = [en]; while (q.length) { const c = q.shift(); for (const nb of adjL[c]) if (!seen.has(nb)) { seen.add(nb); q.push(nb); } }
+    if (!seen.has(ex)) issues.push('進場↔撤離 未連通');
+  }
+  return issues;
+}
+function editorTestPlay() {
+  const fatal = editorValidate().filter(s => /未連通|waypoint|進場|撤離/.test(s));
+  if (fatal.length) { editMsg = '無法試玩：' + fatal.join('；'); return; }
+  MAPS.__editTest = normalizeForPlay(edit);
+  forcedMap = '__editTest'; fromEditor = true;
+  if (!roster || !roster.length) roster = baseRoster();
+  startMission();
+}
+function editorExport() {
+  const e = edit, J = a => JSON.stringify(a);
+  const key = (e.label || 'mymap').replace(/[^a-zA-Z0-9_]/g, '') || 'mymap';
+  const tb = e.timeBudget ? `\n  timeBudget: ${e.timeBudget},` : '';
+  const s = `${key}: {\n  label: ${J(e.label)},${tb}\n  walls: ${J(e.walls)},\n  doors: ${J(e.doors)},\n  lowWalls: ${J(e.lowWalls)},\n  buttons: ${J(e.buttons)},\n  waypoints: ${J(e.waypoints)},\n  edges: ${J(e.edges)},\n  entryPoints: ${J(e.entryPoints)},\n  extractionPoints: ${J(e.extractionPoints)},\n  enemySpawns: ${J(e.enemySpawns)},\n  prisoners: ${J(e.prisoners)},\n},`;
+  console.log('=== SLEEPER MAP EXPORT (貼進 MAPS{}，再於 ROADMAP 節點加 map:\'' + key + '\') ===\n' + s);
+  try { localStorage.setItem('sleeper_map', JSON.stringify(e)); } catch (_) { }
+  editMsg = '已輸出到 console(F12) + 存草稿；鍵名 ' + key;
+}
+
+/* ---- 編輯器繪製 ---- */
+function eBtn(x, y, w, h, label, fn, opts = {}) {
+  const on = opts.active, en = opts.enabled !== false;
+  ctx.fillStyle = on ? 'rgba(95,160,210,0.95)' : (en ? 'rgba(40,50,64,0.95)' : 'rgba(30,34,40,0.6)');
+  ctx.fillRect(x, y, w, h); ctx.lineWidth = 1.2; ctx.strokeStyle = on ? '#bfe3ff' : 'rgba(150,170,190,0.6)'; ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = en ? (on ? '#08121a' : '#dbe6f0') : '#666'; ctx.font = '12px Consolas'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 1); ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  if (en && fn) editRects.push({ x, y, w, h, fn });
+}
+function drawEditGeom() {
+  const e = edit;
+  for (const [a, b] of e.edges) { const A = e.waypoints[a], B = e.waypoints[b]; if (!A || !B) continue; const bad = e.lowWalls.some(lw => segIntersect(A.pos, B.pos, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 })); ctx.strokeStyle = bad ? 'rgba(255,90,90,0.85)' : 'rgba(120,160,200,0.5)'; ctx.lineWidth = bad ? 2.5 : 1.5; ctx.beginPath(); ctx.moveTo(A.pos.x, A.pos.y); ctx.lineTo(B.pos.x, B.pos.y); ctx.stroke(); }
+  ctx.setLineDash([10, 6]); ctx.strokeStyle = 'rgba(120,150,180,0.7)'; ctx.lineWidth = 5; ctx.lineCap = 'butt'; for (const lw of e.lowWalls) { ctx.beginPath(); ctx.moveTo(lw.x1, lw.y1); ctx.lineTo(lw.x2, lw.y2); ctx.stroke(); } ctx.setLineDash([]); ctx.lineCap = 'round';
+  ctx.strokeStyle = '#4a5566'; ctx.lineWidth = 6; for (const w of e.walls) { ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke(); }
+  ctx.strokeStyle = '#caa05a'; ctx.lineWidth = 8; for (const d of e.doors) { ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke(); }
+  for (const b of e.buttons) { ctx.fillStyle = '#caa05a'; ctx.fillRect(b.x - 6, b.y - 6, 12, 12); ctx.strokeStyle = '#1a1f28'; ctx.lineWidth = 1.5; ctx.strokeRect(b.x - 6, b.y - 6, 12, 12); const d = e.doors.find(x => x.id === b.doorId); if (d) { ctx.strokeStyle = 'rgba(200,160,90,0.35)'; ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo((d.x1 + d.x2) / 2, (d.y1 + d.y2) / 2); ctx.stroke(); ctx.setLineDash([]); } }
+  for (const w of e.waypoints) {
+    const sp = e.enemySpawns.find(s => s.nodeId === w.id);
+    ctx.fillStyle = editSelWp === w.id ? '#ffffff' : 'rgba(150,180,210,0.9)'; ctx.beginPath(); ctx.arc(w.pos.x, w.pos.y, 5, 0, Math.PI * 2); ctx.fill();
+    if (sp) { ctx.strokeStyle = sp.personality === 'rusher' ? '#ff6b6b' : '#ffb454'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(w.pos.x, w.pos.y, 9, 0, Math.PI * 2); ctx.stroke(); }
+    ctx.fillStyle = '#8aa'; ctx.font = '9px Consolas'; ctx.textAlign = 'center'; ctx.fillText('#' + w.id + (sp ? ' ' + sp.personality[0].toUpperCase() : ''), w.pos.x, w.pos.y - 10);
+    ctx.fillStyle = 'rgba(150,170,190,0.55)'; ctx.fillText(w.tags.join(','), w.pos.x, w.pos.y + 18); ctx.textAlign = 'left';
+  }
+  for (const pr of e.prisoners) { ctx.strokeStyle = '#7fe3c0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(pr.x, pr.y, 11, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = '#7fe3c0'; ctx.font = 'bold 11px Consolas'; ctx.textAlign = 'center'; ctx.fillText('俘', pr.x, pr.y + 4); ctx.textAlign = 'left'; }
+  const en = e.entryPoints[0], ex = e.extractionPoints[0];
+  if (en) { ctx.strokeStyle = '#caa05a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(en.x, en.y, 12, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = '#caa05a'; ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center'; ctx.fillText('進', en.x, en.y + 4); ctx.textAlign = 'left'; }
+  if (ex) { ctx.strokeStyle = '#5fd06b'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ex.x, ex.y, 12, 0, Math.PI * 2); ctx.stroke(); ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center'; ctx.fillText('撤', ex.x, ex.y + 4); ctx.textAlign = 'left'; }
+}
+function drawEditorUI() {
+  editRects = [];
+  // 格線
+  if (editSnap) { ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1; for (let x = 0; x <= 1280; x += editSnap) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 720); ctx.stroke(); } for (let y = 0; y <= 720; y += editSnap) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1280, y); ctx.stroke(); } }
+  drawEditGeom();
+  // 拖拉預覽 + 對齊游標
+  const cur = snapPt({ x: mouse.mx, y: mouse.my });
+  if (editDrag && isDragTool(editTool)) { ctx.strokeStyle = '#ffd27d'; ctx.setLineDash([6, 6]); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(editDrag.x, editDrag.y); ctx.lineTo(cur.x, cur.y); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cur.x, cur.y, 4, 0, Math.PI * 2); ctx.stroke();
+  // 上方工具列
+  ctx.fillStyle = 'rgba(8,11,16,0.86)'; ctx.fillRect(0, 0, cv.width, 104);
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 16px Consolas'; ctx.textAlign = 'left'; ctx.fillText('關卡編輯器', 14, 26);
+  let ax = cv.width - 14; const act = (label, fn, w, opts) => { ax -= w; eBtn(ax, 12, w, 24, label, fn, opts); ax -= 6; };
+  act('離開', editorExit, 56); act('試玩', editorTestPlay, 56); act('輸出', editorExport, 56); act('草稿', () => editorLoad('saved'), 56);
+  act('bravo', () => editorLoad('bravo'), 58); act('alpha', () => editorLoad('alpha'), 58); act('空白', () => editorLoad('blank'), 56);
+  act('格線:' + (editSnap ? '開' : '關'), () => editSnap = editSnap ? 0 : 20, 78, { active: !!editSnap });
+  const TBC = [0, 60, 90, 120, 150]; act('時間:' + (edit.timeBudget ? edit.timeBudget + 's' : '預設'), () => { edit.timeBudget = TBC[(TBC.indexOf(edit.timeBudget) + 1) % TBC.length] || 0; }, 86);
+  const tools = [['wall', '牆'], ['door', '門'], ['low', '矮牆'], ['wp', '點'], ['edge', '連線'], ['spawn', '敵'], ['button', '鈕'], ['entry', '進'], ['extract', '撤'], ['erase', '刪'], ['prisoner', '俘虜']];
+  let tx = 14; tools.forEach((t, i) => { const hot = t[0] === 'prisoner' ? 'P' : ((i + 1) % 10); eBtn(tx, 44, 58, 24, hot + ' ' + t[1], () => { editTool = t[0]; editSelWp = null; }, { active: editTool === t[0] }); tx += 62; });
+  ctx.fillStyle = editTool === 'wp' ? '#dbe6f0' : '#5a6470'; ctx.font = '11px Consolas'; ctx.textAlign = 'left'; ctx.fillText('點標籤:', 14, 92);
+  const tags = ['patrol', 'cover', 'flank', 'vantage', 'rush', 'choke', 'spawn']; let gx = 66; tags.forEach(tg => { eBtn(gx, 79, 62, 18, tg, () => editTagBrush = tg, { active: editTagBrush === tg }); gx += 66; });
+  // 下方狀態
+  const issues = editorValidate();
+  ctx.fillStyle = 'rgba(8,11,16,0.82)'; ctx.fillRect(0, cv.height - 46, cv.width, 46);
+  ctx.textAlign = 'left'; ctx.font = '12px Consolas'; ctx.fillStyle = '#9fb3c8';
+  ctx.fillText('工具:' + editTool + '　左鍵放置/拖拉 · 右鍵刪除 · 1‑0 切工具 · G 格線 · edge:點兩個點連線 · 敵:點 waypoint 循環 rusher→flanker→無', 14, cv.height - 26);
+  ctx.fillStyle = issues.length ? '#ff9b6b' : '#5fd06b'; ctx.fillText(issues.length ? '⚠ ' + issues.join('；') : '✓ 可試玩 / 輸出', 14, cv.height - 8);
+  if (editMsg) { ctx.fillStyle = '#ffe08a'; ctx.textAlign = 'right'; ctx.fillText(editMsg, cv.width - 14, cv.height - 8); ctx.textAlign = 'left'; }
+}
+function drawEditor() { ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height); drawEditorUI(); }
+
+/* =====================================================================
+   Main loop
+   ===================================================================== */
+const FIXED = 1 / 60;
+let acc = 0, last = performance.now();
+function frame(now) {
+  let delta = (now - last) / 1000; last = now;
+  if (delta > 0.25) delta = 0.25;
+  acc += delta;
+  while (acc >= FIXED) { update(FIXED); acc -= FIXED; }
+  draw();
+  requestAnimationFrame(frame);
+}
+
+initRun();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
