@@ -126,6 +126,76 @@ function segIntersect(a, b, c, d) {
 }
 const ptInRect = (p, r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h;
 const SEG2 = (s) => [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }];
+const rectWalls = (x1, y1, x2, y2) => [
+  { layer: 'walls', x1, y1, x2, y2: y1 }, { layer: 'walls', x1: x2, y1, x2, y2 },
+  { layer: 'walls', x1: x2, y1: y2, x2: x1, y2 }, { layer: 'walls', x1, y1: y2, x2: x1, y2: y1 },
+];
+
+/* =====================================================================
+   地圖特徵（prefab）— build(box, opt) → 一批基本物件描述（{layer,…}）。
+   box = {x,y,w,h}（已吸附）；opt = 整數，循環特徵的子選項（門側/方向/角落…）。
+   產出皆為扁平基本物件（牆/低矮牆/門/破壞物），放下後即一般物件；
+   要事後整組縮放＝框選它們成暫時群組（不存持久 _gid）。
+   ===================================================================== */
+const FEATURES = [
+  { id: 'pillar', name: '柱子', opts: 0, build: (b) => rectWalls(b.x, b.y, b.x + b.w, b.y + b.h) },
+  { id: 'room', name: '簡易房間', opts: 4, optName: ['缺口:上', '缺口:右', '缺口:下', '缺口:左'], build: (b, o) => roomWalls(b, o, false) },
+  { id: 'roomdoor', name: '房間+真門', opts: 4, optName: ['門:上', '門:右', '門:下', '門:左'], build: (b, o) => roomWalls(b, o, true) },
+  { id: 'corridor', name: '長廊', opts: 2, optName: ['水平', '垂直'], build: (b, o) => o % 2 === 0
+      ? [{ layer: 'walls', x1: b.x, y1: b.y, x2: b.x + b.w, y2: b.y }, { layer: 'walls', x1: b.x, y1: b.y + b.h, x2: b.x + b.w, y2: b.y + b.h }]
+      : [{ layer: 'walls', x1: b.x, y1: b.y, x2: b.x, y2: b.y + b.h }, { layer: 'walls', x1: b.x + b.w, y1: b.y, x2: b.x + b.w, y2: b.y + b.h }] },
+  { id: 'corner', name: '轉角', opts: 4, optName: ['左上', '右上', '右下', '左下'], build: (b, o) => cornerWalls(b, o) },
+  { id: 'window', name: '窗牆', opts: 2, optName: ['水平', '垂直'], build: (b, o) => windowWall(b, o) },
+  { id: 'covers', name: '掩體叢', opts: 0, build: (b) => coverCluster(b) },
+  { id: 'cross', name: '十字路口', opts: 0, build: (b) => crossRoads(b) },
+];
+function roomWalls(b, o, realDoor) {
+  const x1 = b.x, y1 = b.y, x2 = b.x + b.w, y2 = b.y + b.h, side = o % 4;
+  const gw = Math.max(40, Math.min(side % 2 === 0 ? b.w : b.h, 120) * 0.5);  // 缺口寬
+  const out = [];
+  const sideSeg = (sx1, sy1, sx2, sy2, gapped) => {
+    if (!gapped) { out.push({ layer: 'walls', x1: sx1, y1: sy1, x2: sx2, y2: sy2 }); return; }
+    const mx = (sx1 + sx2) / 2, my = (sy1 + sy2) / 2, horiz = Math.abs(sx2 - sx1) > Math.abs(sy2 - sy1);
+    if (horiz) { out.push({ layer: 'walls', x1: sx1, y1: sy1, x2: mx - gw / 2, y2: sy1 }); out.push({ layer: 'walls', x1: mx + gw / 2, y1: sy1, x2: sx2, y2: sy2 }); if (realDoor) out.push({ layer: 'doors', x1: mx - gw / 2, y1: sy1, x2: mx + gw / 2, y2: sy1 }); }
+    else { out.push({ layer: 'walls', x1: sx1, y1: sy1, x2: sx1, y2: my - gw / 2 }); out.push({ layer: 'walls', x1: sx1, y1: my + gw / 2, x2: sx2, y2: sy2 }); if (realDoor) out.push({ layer: 'doors', x1: sx1, y1: my - gw / 2, x2: sx1, y2: my + gw / 2 }); }
+  };
+  sideSeg(x1, y1, x2, y1, side === 0); // 上
+  sideSeg(x2, y1, x2, y2, side === 1); // 右
+  sideSeg(x1, y2, x2, y2, side === 2); // 下
+  sideSeg(x1, y1, x1, y2, side === 3); // 左
+  return out;
+}
+function cornerWalls(b, o) {
+  const x1 = b.x, y1 = b.y, x2 = b.x + b.w, y2 = b.y + b.h;
+  const c = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]][o % 4];   // 角落座標
+  const hEnd = (o % 4 === 1 || o % 4 === 2) ? x1 : x2;          // 水平段往對側
+  const vEnd = (o % 4 === 2 || o % 4 === 3) ? y1 : y2;          // 垂直段往對側
+  return [{ layer: 'walls', x1: c[0], y1: c[1], x2: hEnd, y2: c[1] }, { layer: 'walls', x1: c[0], y1: c[1], x2: c[0], y2: vEnd }];
+}
+function windowWall(b, o) {
+  const horiz = o % 2 === 0;
+  if (horiz) { const y = b.y + b.h / 2, a = b.x + b.w / 3, c = b.x + 2 * b.w / 3; return [
+    { layer: 'walls', x1: b.x, y1: y, x2: a, y2: y }, { layer: 'destructibles', x1: a, y1: y, x2: c, y2: y, intact: 'glass', broken: 'flat', hp: 40 }, { layer: 'walls', x1: c, y1: y, x2: b.x + b.w, y2: y }]; }
+  const x = b.x + b.w / 2, a = b.y + b.h / 3, c = b.y + 2 * b.h / 3; return [
+    { layer: 'walls', x1: x, y1: b.y, x2: x, y2: a }, { layer: 'destructibles', x1: x, y1: a, x2: x, y2: c, intact: 'glass', broken: 'flat', hp: 40 }, { layer: 'walls', x1: x, y1: c, x2: x, y2: b.y + b.h }];
+}
+function coverCluster(b) {                                  // 3 段短低矮牆掩體（依 box 推算、無隨機）
+  const cx = b.x + b.w / 2, cy = b.y + b.h / 2, u = Math.min(b.w, b.h) * 0.28;
+  return [
+    { layer: 'lowWalls', x1: b.x + b.w * 0.2, y1: cy, x2: b.x + b.w * 0.2 + u, y2: cy },
+    { layer: 'lowWalls', x1: cx, y1: b.y + b.h * 0.25, x2: cx, y2: b.y + b.h * 0.25 + u },
+    { layer: 'lowWalls', x1: b.x + b.w * 0.7, y1: b.y + b.h * 0.7, x2: b.x + b.w * 0.7 + u, y2: b.y + b.h * 0.7 },
+  ];
+}
+function crossRoads(b) {                                    // 四邊各留中央缺口＝十字通道
+  const x1 = b.x, y1 = b.y, x2 = b.x + b.w, y2 = b.y + b.h, gw = Math.min(b.w, b.h) * 0.34;
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, out = [];
+  out.push({ layer: 'walls', x1, y1, x2: mx - gw / 2, y2: y1 }, { layer: 'walls', x1: mx + gw / 2, y1, x2, y2: y1 });   // 上
+  out.push({ layer: 'walls', x1, y1: y2, x2: mx - gw / 2, y2 }, { layer: 'walls', x1: mx + gw / 2, y1: y2, x2, y2 });   // 下
+  out.push({ layer: 'walls', x1, y1, x2: x1, y2: my - gw / 2 }, { layer: 'walls', x1, y1: my + gw / 2, x2: x1, y2 });   // 左
+  out.push({ layer: 'walls', x1: x2, y1, x2, y2: my - gw / 2 }, { layer: 'walls', x1: x2, y1: my + gw / 2, x2, y2 });   // 右
+  return out;
+}
 
 /* =====================================================================
    模型（＝遊戲地圖物件）。waypoint 索引即 id；刪點重編號。
@@ -222,15 +292,82 @@ function setSpawn(nodeId, patch) {
 }
 function removeSpawn(nodeId) { const i = map.enemySpawns.findIndex(s => s.nodeId === nodeId); if (i >= 0) { pushUndo(); map.enemySpawns.splice(i, 1); } }
 
-/* 通用刪除：依 selection 物件移除 */
+/* 通用刪除：依 selection 物件移除（群組則整批） */
 function removeSelected() {
+  if (selRefs.length > 1) { removeRefs(selRefs); sel = null; selRefs = []; return; }
   if (!sel) return;
   const k = sel.kind;
   if (k === 'waypoint') { removeWaypoint(sel.i); sel = null; return; }
   if (k === 'edge') { pushUndo(); const e = sel.e; const idx = map.edges.findIndex(x => x[0] === e[0] && x[1] === e[1]); if (idx >= 0) map.edges.splice(idx, 1); sel = null; return; }
   if (k === 'spawn') { removeSpawn(sel.nodeId); sel = null; return; }
-  const arrName = { wall: 'walls', door: 'doors', lowwall: 'lowWalls', destruct: 'destructibles', bush: 'bushes', button: 'buttons', entry: 'entryPoints', extract: 'extractionPoints', prisoner: 'prisoners' }[k];
+  const arrName = ARR_OF[k];
   if (arrName) { pushUndo(); const arr = map[arrName]; const idx = arr.indexOf(sel.ref); if (idx >= 0) arr.splice(idx, 1); sel = null; }
+}
+const ARR_OF = { wall: 'walls', door: 'doors', lowwall: 'lowWalls', destruct: 'destructibles', bush: 'bushes', button: 'buttons', entry: 'entryPoints', extract: 'extractionPoints', prisoner: 'prisoners' };
+function removeRefs(refs) {                                  // 刪除一批物件（群組刪除）
+  if (!refs.length) return; pushUndo();
+  for (const r of refs) { const arr = map[ARR_OF[r.kind]]; if (!arr) continue; const i = arr.indexOf(r.ref); if (i >= 0) arr.splice(i, 1); }
+}
+
+/* ---- 門切牆缺口（門與某牆共線重疊→把牆從門兩端切斷留缺口）---- */
+function cutWallsForDoor(door) {
+  const C = { x: door.x1, y: door.y1 }, D = { x: door.x2, y: door.y2 };
+  if (dist(C, D) < 1) return false;
+  const onLine = (A, B, P) => { const ablen = Math.hypot(B.x - A.x, B.y - A.y) || 1; return Math.abs((B.x - A.x) * (P.y - A.y) - (B.y - A.y) * (P.x - A.x)) / ablen <= 2; };
+  const out = []; let cut = false;
+  for (const w of map.walls) {
+    const A = { x: w.x1, y: w.y1 }, B = { x: w.x2, y: w.y2 }, abx = B.x - A.x, aby = B.y - A.y, ab2 = abx * abx + aby * aby || 1;
+    if (!(onLine(A, B, C) && onLine(A, B, D))) { out.push(w); continue; }   // 非共線→保留
+    let tc = ((C.x - A.x) * abx + (C.y - A.y) * aby) / ab2, td = ((D.x - A.x) * abx + (D.y - A.y) * aby) / ab2;
+    let t0 = clamp(Math.min(tc, td), 0, 1), t1 = clamp(Math.max(tc, td), 0, 1);
+    if (t1 - t0 <= 1e-3) { out.push(w); continue; }                          // 在此牆內無實際重疊
+    cut = true;
+    if (t0 > 1e-3) out.push({ x1: A.x, y1: A.y, x2: A.x + abx * t0, y2: A.y + aby * t0 });
+    if (t1 < 1 - 1e-3) out.push({ x1: A.x + abx * t1, y1: A.y + aby * t1, x2: B.x, y2: B.y });
+    // 中段（門所在）移除
+  }
+  if (cut) map.walls = out;
+  return cut;
+}
+
+/* ---- 放置特徵：build → 推入各陣列 → 回傳建立的 refs（供框選整組）---- */
+function stampFeature(idx, box) {
+  const f = FEATURES[idx]; if (!f) return [];
+  pushUndo();
+  const items = f.build(box, featureOpt), refs = [], doors = [];
+  for (const it of items) {
+    let o, kind;
+    if (it.layer === 'doors') { o = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2, id: nextId(map.doors, 'd'), open: false }; map.doors.push(o); doors.push(o); kind = 'door'; }
+    else if (it.layer === 'destructibles') { o = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2, hp: it.hp, intact: it.intact, broken: it.broken }; map.destructibles.push(o); kind = 'destruct'; }
+    else if (it.layer === 'lowWalls') { o = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 }; map.lowWalls.push(o); kind = 'lowwall'; }
+    else { o = { x1: it.x1, y1: it.y1, x2: it.x2, y2: it.y2 }; map.walls.push(o); kind = 'wall'; }
+    refs.push({ kind, ref: o });
+  }
+  for (const d of doors) cutWallsForDoor(d);   // 房間+真門：門在缺口、無重疊牆故不切；疊到既有牆才切
+  return refs;
+}
+
+/* ---- 群組（框選的選取集）變換：bbox / 位移 / 縮放 ---- */
+function refBounds(r) {
+  const o = r.ref;
+  if (o.x1 != null) return { minx: Math.min(o.x1, o.x2), miny: Math.min(o.y1, o.y2), maxx: Math.max(o.x1, o.x2), maxy: Math.max(o.y1, o.y2) };
+  if (o.w != null) return { minx: o.x, miny: o.y, maxx: o.x + o.w, maxy: o.y + o.h };
+  return { minx: o.x, miny: o.y, maxx: o.x, maxy: o.y };
+}
+function bboxOfRefs(refs) {
+  if (!refs.length) return null;
+  let b = { minx: Infinity, miny: Infinity, maxx: -Infinity, maxy: -Infinity };
+  for (const r of refs) { const rb = refBounds(r); b.minx = Math.min(b.minx, rb.minx); b.miny = Math.min(b.miny, rb.miny); b.maxx = Math.max(b.maxx, rb.maxx); b.maxy = Math.max(b.maxy, rb.maxy); }
+  return b;
+}
+const refCoords = (r) => { const o = r.ref; return o.x1 != null ? { x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 } : o.w != null ? { x: o.x, y: o.y, w: o.w, h: o.h } : { x: o.x, y: o.y }; };
+const setRefCoords = (r, c) => Object.assign(r.ref, c);
+function moveRef(r, dx, dy) { const o = r.ref; if (o.x1 != null) { o.x1 += dx; o.y1 += dy; o.x2 += dx; o.y2 += dy; } else { o.x += dx; o.y += dy; } }
+function scaleRefFrom(r, base, ax, ay, sx, sy) {
+  const o = r.ref, fx = x => ax + (x - ax) * sx, fy = y => ay + (y - ay) * sy;
+  if (base.x1 != null) { o.x1 = fx(base.x1); o.y1 = fy(base.y1); o.x2 = fx(base.x2); o.y2 = fy(base.y2); }
+  else if (base.w != null) { o.x = fx(base.x); o.y = fy(base.y); o.w = Math.max(4, base.w * sx); o.h = Math.max(4, base.h * sy); }
+  else { o.x = fx(base.x); o.y = fy(base.y); }
 }
 
 /* =====================================================================
@@ -320,6 +457,12 @@ let destructPreset = 0;
 let tagBrush = 'patrol';
 let mouseWorld = { x: 0, y: 0 };
 let panning = null;
+let selRefs = [];          // 框選的物件群組（地圖物件頁）：[{kind,ref}]
+let marquee = null;        // 框選中：{x1,y1,x2,y2}（世界座標）
+let featureIdx = 0;        // 目前特徵
+let featureOpt = 0;        // 特徵子選項（門側/方向/角落…）
+let lastPick = null;       // 重疊點擊循環：{p, all, i}
+let mouseShift = false;    // 目前 Shift 是否按住（縮放等比用）
 
 const snapV = (v) => snap > 0 ? Math.round(v / snap) * snap : v;
 const snapP = (p) => ({ x: snapV(p.x), y: snapV(p.y) });
@@ -328,12 +471,13 @@ const wr = (px) => px / view.scale;   // 螢幕 px → 世界距離
 
 /* 工具配置（依分頁） */
 const TOOLSETS = {
-  objects: [['select', '選取/移動'], ['wall', '牆'], ['door', '門'], ['lowwall', '低矮牆'], ['destruct', '破壞物'], ['bush', '草叢'], ['button', '按鈕'], ['entry', '進場點'], ['extract', '撤離點'], ['erase', '刪除']],
+  objects: [['select', '選取/移動'], ['feature', '★特徵'], ['wall', '牆'], ['door', '門'], ['lowwall', '低矮牆'], ['destruct', '破壞物'], ['bush', '草叢'], ['button', '按鈕'], ['entry', '進場點'], ['extract', '撤離點'], ['erase', '刪除']],
   waypoints: [['move', '選取/移動'], ['add', '加點'], ['link', '連線'], ['erase', '刪除']],
   enemies: [['assign', '指派敵人'], ['prisoner', '俘虜'], ['erase', '刪除']],
 };
-function setTab(t) { tab = t; tool = TOOLSETS[t][0][0]; sel = null; linkFrom = null; rebuildUI(); }
-function setTool(t) { tool = t; sel = null; linkFrom = null; rebuildToolsUI(); rebuildInspector(); }
+function clearSel() { sel = null; selRefs = []; marquee = null; linkFrom = null; lastPick = null; }
+function setTab(t) { tab = t; tool = TOOLSETS[t][0][0]; clearSel(); rebuildUI(); }
+function setTool(t) { tool = t; clearSel(); rebuildToolsUI(); rebuildInspector(); }
 
 /* =====================================================================
    命中測試（世界座標）
@@ -365,6 +509,40 @@ function hitObjects(p) {
   }
   return null;
 }
+// 一點處所有候選（供重疊循環選取）
+function hitObjectsAll(p) {
+  const out = [], r = wr(8);
+  for (const [tk, ln] of [['wall', 'walls'], ['door', 'doors'], ['lowwall', 'lowWalls'], ['destruct', 'destructibles']])
+    for (const s of map[ln]) if (distToSeg(p, { x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }) < wr(6) || dist(p, { x: s.x1, y: s.y1 }) < r || dist(p, { x: s.x2, y: s.y2 }) < r) out.push({ kind: tk, ref: s });
+  for (const b of map.buttons) if (dist(p, b) < wr(10)) out.push({ kind: 'button', ref: b });
+  for (const e of map.entryPoints) if (dist(p, e) < wr(12)) out.push({ kind: 'entry', ref: e });
+  for (const e of map.extractionPoints) if (dist(p, e) < wr(12)) out.push({ kind: 'extract', ref: e });
+  for (const pr of map.prisoners) if (dist(p, pr) < wr(12)) out.push({ kind: 'prisoner', ref: pr });
+  for (const bu of map.bushes) if (ptInRect(p, bu)) out.push({ kind: 'bush', ref: bu });
+  return out;
+}
+function hitObjectsCycle(p) {                                // 同點重複點＝循環選堆疊物件
+  const all = hitObjectsAll(p);
+  if (!all.length) { lastPick = null; return null; }
+  if (lastPick && dist(p, lastPick.p) < wr(7) && lastPick.all.length === all.length) lastPick = { p, all, i: (lastPick.i + 1) % all.length };
+  else lastPick = { p, all, i: 0 };
+  return all[lastPick.i];
+}
+function marqueeCollect(rect) {                              // 框內（bbox 相交）所有物件
+  const R = { minx: Math.min(rect.x1, rect.x2), miny: Math.min(rect.y1, rect.y2), maxx: Math.max(rect.x1, rect.x2), maxy: Math.max(rect.y1, rect.y2) };
+  const hit = (b) => b.minx <= R.maxx && b.maxx >= R.minx && b.miny <= R.maxy && b.maxy >= R.miny;
+  const out = [];
+  for (const k in ARR_OF) for (const o of map[ARR_OF[k]]) if (hit(refBounds({ ref: o }))) out.push({ kind: k, ref: o });
+  return out;
+}
+const insideBox = (p, b, pad) => b && p.x >= b.minx - pad && p.x <= b.maxx + pad && p.y >= b.miny - pad && p.y <= b.maxy + pad;
+const GHANDLES = [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]];  // 8 控制點 (hx,hy)
+function handleHit(p) {
+  const b = bboxOfRefs(selRefs); if (!b) return null;
+  const W = b.maxx - b.minx, H = b.maxy - b.miny;
+  for (const [hx, hy] of GHANDLES) { const hp = { x: b.minx + hx * W, y: b.miny + hy * H }; if (dist(p, hp) < wr(9)) return { hx, hy, b0: b }; }
+  return null;
+}
 
 /* =====================================================================
    滑鼠互動
@@ -380,22 +558,33 @@ function onDown(e) {
 }
 function downObjects(w) {
   if (tool === 'select') {
-    const h = hitObjects(w);
-    sel = h;
-    if (h) {
-      if (h.end) drag = { kind: 'segend', ref: h.ref, end: h.end, did: false };
-      else if (h.kind === 'bush') drag = { kind: 'bushmove', ref: h.ref, start: w, o: { x: h.ref.x, y: h.ref.y }, did: false };
-      else if (['wall', 'door', 'lowwall', 'destruct'].includes(h.kind)) drag = { kind: 'segmove', ref: h.ref, start: w, o: { x1: h.ref.x1, y1: h.ref.y1, x2: h.ref.x2, y2: h.ref.y2 }, did: false };
-      else drag = { kind: 'ptmove', ref: h.ref, start: w, o: { x: h.ref.x, y: h.ref.y }, did: false };
+    // 已有群組：先抓控制點(縮放) / 框內(整組位移)
+    if (selRefs.length > 1) {
+      const hh = handleHit(w);
+      if (hh) { drag = { kind: 'gscale', h: hh, base: selRefs.map(refCoords), did: false }; return; }
+      if (insideBox(w, bboxOfRefs(selRefs), wr(3))) { drag = { kind: 'gmove', start: w, base: selRefs.map(refCoords), did: false }; return; }
     }
+    const h = hitObjectsCycle(w);
+    if (h) {
+      sel = h; selRefs = [{ kind: h.kind, ref: h.ref }];
+      const o = h.ref, r = wr(8);
+      if (['wall', 'door', 'lowwall', 'destruct'].includes(h.kind)) {
+        if (dist(w, { x: o.x1, y: o.y1 }) < r) drag = { kind: 'segend', ref: o, end: 'a', did: false };
+        else if (dist(w, { x: o.x2, y: o.y2 }) < r) drag = { kind: 'segend', ref: o, end: 'b', did: false };
+        else drag = { kind: 'segmove', ref: o, start: w, o: { x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 }, did: false };
+      } else if (h.kind === 'bush') drag = { kind: 'bushmove', ref: o, start: w, o: { x: o.x, y: o.y }, did: false };
+      else drag = { kind: 'ptmove', ref: o, start: w, o: { x: o.x, y: o.y }, did: false };
+    } else { sel = null; selRefs = []; drag = { kind: 'marquee', x1: w.x, y1: w.y, x2: w.x, y2: w.y }; }
+  } else if (tool === 'feature') {
+    drag = { kind: 'newfeature', start: snapP(w), end: snapP(w) };
   } else if (['wall', 'door', 'lowwall', 'destruct'].includes(tool)) {
     drag = { kind: 'newseg', start: snapP(w), end: snapP(w) };
   } else if (tool === 'bush') {
     drag = { kind: 'newbush', start: snapP(w), end: snapP(w) };
-  } else if (tool === 'button') { sel = { kind: 'button', ref: addButton(snapV(w.x), snapV(w.y)) }; }
-  else if (tool === 'entry') { sel = { kind: 'entry', ref: addPoint('entry', snapV(w.x), snapV(w.y)) }; }
-  else if (tool === 'extract') { sel = { kind: 'extract', ref: addPoint('extract', snapV(w.x), snapV(w.y)) }; }
-  else if (tool === 'erase') { sel = hitObjects(w); removeSelected(); }
+  } else if (tool === 'button') { sel = { kind: 'button', ref: addButton(snapV(w.x), snapV(w.y)) }; selRefs = [sel]; }
+  else if (tool === 'entry') { sel = { kind: 'entry', ref: addPoint('entry', snapV(w.x), snapV(w.y)) }; selRefs = [sel]; }
+  else if (tool === 'extract') { sel = { kind: 'extract', ref: addPoint('extract', snapV(w.x), snapV(w.y)) }; selRefs = [sel]; }
+  else if (tool === 'erase') { sel = hitObjectsCycle(w); removeSelected(); }
 }
 function downWaypoints(w) {
   const ni = hitWaypoint(w);
@@ -432,6 +621,7 @@ function downEnemies(w) {
 }
 function onMove(e) {
   mouseWorld = s2w({ x: e._sx, y: e._sy });
+  mouseShift = !!e.shift;
   if (panning) { view.ox = panning.ox + (e._sx - panning.sx); view.oy = panning.oy + (e._sy - panning.sy); return; }
   if (!drag) return;
   const w = mouseWorld, sp = snapP(w);
@@ -439,23 +629,40 @@ function onMove(e) {
   switch (drag.kind) {
     case 'newseg': drag.end = sp; break;
     case 'newbush': drag.end = sp; break;
+    case 'newfeature': drag.end = sp; break;
+    case 'marquee': drag.x2 = w.x; drag.y2 = w.y; break;
     case 'segend': { const s = drag.ref; if (drag.end === 'a') { s.x1 = sp.x; s.y1 = sp.y; } else { s.x2 = sp.x; s.y2 = sp.y; } break; }
     case 'segmove': { const s = drag.ref, dx = snapV(w.x - drag.start.x), dy = snapV(w.y - drag.start.y); s.x1 = drag.o.x1 + dx; s.y1 = drag.o.y1 + dy; s.x2 = drag.o.x2 + dx; s.y2 = drag.o.y2 + dy; break; }
     case 'bushmove': { const s = drag.ref, dx = snapV(w.x - drag.start.x), dy = snapV(w.y - drag.start.y); s.x = drag.o.x + dx; s.y = drag.o.y + dy; break; }
     case 'ptmove': { const s = drag.ref; s.x = sp.x; s.y = sp.y; break; }
     case 'wpmove': moveWaypoint(drag.i, sp.x, sp.y); break;
     case 'facing': { const s = spawnAt(drag.nodeId); if (s) { const node = map.waypoints[s.nodeId].pos; s.facing = Math.atan2(w.y - node.y, w.x - node.x); } break; }
+    case 'gmove': { const dx = snapV(w.x - drag.start.x), dy = snapV(w.y - drag.start.y); selRefs.forEach((r, i) => { setRefCoords(r, Object.assign({}, drag.base[i])); moveRef(r, dx, dy); }); break; }
+    case 'gscale': groupScale(w); break;
   }
+}
+function groupScale(w) {
+  const { hx, hy, b0 } = drag.h, W0 = (b0.maxx - b0.minx) || 1, H0 = (b0.maxy - b0.miny) || 1;
+  const sp = snapP(w);
+  const ax = hx === 0.5 ? 0 : (hx === 1 ? b0.minx : b0.maxx);   // 對側錨點
+  const ay = hy === 0.5 ? 0 : (hy === 1 ? b0.miny : b0.maxy);
+  let sx = hx === 0.5 ? 1 : (hx === 1 ? (sp.x - b0.minx) / W0 : (b0.maxx - sp.x) / W0);
+  let sy = hy === 0.5 ? 1 : (hy === 1 ? (sp.y - b0.miny) / H0 : (b0.maxy - sp.y) / H0);
+  if (mouseShift) { const s = Math.max(Math.abs(sx), Math.abs(sy)); if (hx !== 0.5) sx = s * Math.sign(sx || 1); if (hy !== 0.5) sy = s * Math.sign(sy || 1); }   // Shift 等比
+  sx = Math.abs(sx) < 0.05 ? 0.05 : sx; sy = Math.abs(sy) < 0.05 ? 0.05 : sy;
+  selRefs.forEach((r, i) => scaleRefFrom(r, drag.base[i], ax, ay, hx === 0.5 ? 1 : sx, hy === 0.5 ? 1 : sy));
 }
 function onUp(e) {
   if (panning) { panning = null; return; }
   if (!drag) return;
-  if (drag.kind === 'newseg') { const a = drag.start, b = drag.end; if (dist(a, b) > 4) { sel = { kind: tool, ref: addSegment(tool, a.x, a.y, b.x, b.y) }; } }
-  else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'bush', ref: addBush(a.x, a.y, b.x - a.x, b.y - a.y) }; } }
+  if (drag.kind === 'newseg') { const a = drag.start, b = drag.end; if (dist(a, b) > 4) { const o = addSegment(tool, a.x, a.y, b.x, b.y); if (tool === 'door') cutWallsForDoor(o); sel = { kind: tool, ref: o }; selRefs = [sel]; } }
+  else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'bush', ref: addBush(a.x, a.y, b.x - a.x, b.y - a.y) }; selRefs = [sel]; } }
+  else if (drag.kind === 'newfeature') { const a = drag.start, b = drag.end; const box = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; if (box.w > 8 && box.h > 8) { selRefs = stampFeature(featureIdx, box); sel = selRefs.length === 1 ? selRefs[0] : null; } }
+  else if (drag.kind === 'marquee') { selRefs = marqueeCollect(drag); sel = selRefs.length === 1 ? selRefs[0] : null; }
   drag = null; rebuildInspector();
 }
-// 拖曳移動/改端點：第一次真正動到時才記一筆 undo（新建類在 add* 內已記）
-function ensureDragUndo() { if (drag && (drag.kind === 'segend' || drag.kind === 'segmove' || drag.kind === 'bushmove' || drag.kind === 'ptmove' || drag.kind === 'wpmove' || drag.kind === 'facing')) pushUndo(); }
+// 拖曳移動/改端點/群組變換：第一次真正動到時才記一筆 undo（新建類在 add*/stamp 內已記）
+function ensureDragUndo() { if (drag && ['segend', 'segmove', 'bushmove', 'ptmove', 'wpmove', 'facing', 'gmove', 'gscale'].includes(drag.kind)) pushUndo(); }
 
 function onWheel(e) {
   const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
@@ -464,7 +671,7 @@ function onWheel(e) {
   const after = s2w({ x: e._sx, y: e._sy });
   view.ox += (after.x - before.x) * view.scale; view.oy += (after.y - before.y) * view.scale;
 }
-function onContext(w) { const h = (tab === 'objects') ? hitObjects(w) : null; if (h) { sel = h; removeSelected(); rebuildInspector(); } }
+function onContext(w) { const h = (tab === 'objects') ? hitObjects(w) : null; if (h) { sel = { kind: h.kind, ref: h.ref }; selRefs = [sel]; removeSelected(); rebuildInspector(); } }
 
 /* =====================================================================
    DOM 介面
@@ -485,6 +692,12 @@ function rebuildToolsUI() {
     const hd2 = document.createElement('div'); hd2.className = 'hd'; hd2.textContent = '破壞物預設'; toolsEl.appendChild(hd2);
     DESTRUCT_PRESETS.forEach((p, i) => { const b = document.createElement('div'); b.className = 'tool' + (destructPreset === i ? ' on' : ''); b.textContent = p.name; b.addEventListener('click', () => { destructPreset = i; rebuildToolsUI(); }); toolsEl.appendChild(b); });
   }
+  if (tab === 'objects' && tool === 'feature') {
+    const hd2 = document.createElement('div'); hd2.className = 'hd'; hd2.textContent = '特徵（拖框放置）'; toolsEl.appendChild(hd2);
+    FEATURES.forEach((f, i) => { const b = document.createElement('div'); b.className = 'tool' + (featureIdx === i ? ' on' : ''); b.textContent = f.name; b.addEventListener('click', () => { featureIdx = i; featureOpt = 0; rebuildToolsUI(); }); toolsEl.appendChild(b); });
+    const f = FEATURES[featureIdx];
+    if (f && f.opts > 1) { const hd3 = document.createElement('div'); hd3.className = 'hd'; hd3.textContent = '選項'; toolsEl.appendChild(hd3); const b = document.createElement('div'); b.className = 'tool on'; b.textContent = (f.optName ? f.optName[featureOpt % f.opts] : ('選項 ' + (featureOpt + 1))); b.addEventListener('click', () => { featureOpt = (featureOpt + 1) % f.opts; rebuildToolsUI(); }); toolsEl.appendChild(b); }
+  }
 }
 function field(label, inputEl) { const r = document.createElement('div'); r.className = 'row'; const l = document.createElement('label'); l.textContent = label; r.appendChild(l); r.appendChild(inputEl); return r; }
 function numInput(val, on) { const i = document.createElement('input'); i.type = 'number'; i.value = Math.round(val); i.addEventListener('input', () => { if (i.value !== '' && i.value !== '-') { on(+i.value); } }); return i; }
@@ -493,6 +706,15 @@ function rebuildInspector() {
   if (!inspectorEl) return;
   inspectorEl.innerHTML = '';
   const h = document.createElement('h3'); inspectorEl.appendChild(h);
+  if (selRefs.length > 1) {
+    h.textContent = '群組（' + selRefs.length + ' 物件）';
+    const p = document.createElement('div'); p.className = 'muted'; p.textContent = '拖外框內部＝整組移動；拖角/邊控制點＝縮放（Shift 等比）。'; inspectorEl.appendChild(p);
+    const r = document.createElement('div'); r.className = 'row'; r.style.marginTop = '8px';
+    const b1 = document.createElement('button'); b1.textContent = '解散選取'; b1.style.flex = '1'; b1.addEventListener('click', () => { clearSel(); rebuildInspector(); });
+    const b2 = document.createElement('button'); b2.textContent = '刪除全部'; b2.style.flex = '1'; b2.addEventListener('click', () => { removeSelected(); rebuildInspector(); });
+    r.appendChild(b1); r.appendChild(b2); inspectorEl.appendChild(r);
+    return;
+  }
   if (!sel) { h.textContent = '屬性'; const p = document.createElement('div'); p.className = 'muted'; p.textContent = hintFor(); inspectorEl.appendChild(p); return; }
   const k = sel.kind;
   if (k === 'waypoint') {
@@ -521,7 +743,9 @@ function rebuildInspector() {
     const tip = document.createElement('div'); tip.className = 'muted'; tip.textContent = '畫面上拖白色把手調朝向'; inspectorEl.appendChild(tip);
     addDeleteBtn('移除此敵人');
   } else if (k === 'door') {
-    const s = sel.ref; h.textContent = '門 ' + s.id; segFields(s); addDeleteBtn('刪除門');
+    const s = sel.ref; h.textContent = '門 ' + s.id; segFields(s);
+    const cr = document.createElement('div'); cr.className = 'row'; const cb = document.createElement('button'); cb.textContent = '切出牆缺口'; cb.style.flex = '1'; cb.addEventListener('click', () => { pushUndo(); cutWallsForDoor(s); updateStatus(); }); cr.appendChild(cb); inspectorEl.appendChild(cr);
+    addDeleteBtn('刪除門');
   } else if (k === 'destruct') {
     const s = sel.ref; h.textContent = '破壞物'; segFields(s);
     const psel = document.createElement('select'); DESTRUCT_PRESETS.forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.textContent = p.name; psel.appendChild(o); });
@@ -556,7 +780,7 @@ function rebuildInspector() {
   function addDeleteBtn(label) { const r = document.createElement('div'); r.className = 'row'; r.style.marginTop = '8px'; const b = document.createElement('button'); b.textContent = label; b.style.flex = '1'; b.addEventListener('click', () => { removeSelected(); rebuildInspector(); }); r.appendChild(b); inspectorEl.appendChild(r); }
 }
 function hintFor() {
-  if (tab === 'objects') return '選工具後在畫布拖曳/點擊放置。選取工具可拖動物件或端點。右鍵刪除。';
+  if (tab === 'objects') return '工具放置物件（可重疊）；★特徵＝拖框放整組地圖特徵；選取工具：點選單一(重疊處重複點循環)、空白拖曳框選多個成群組整體縮放/位移；門放到牆上會自動切缺口。右鍵刪除。';
   if (tab === 'waypoints') return '加點：點空白；連線：點兩個點建/斷邊，點線上刪邊；移動：拖點。';
   return '指派：點 waypoint 放敵人，選後改類型/個性/朝向；俘虜：點放置。';
 }
@@ -631,10 +855,21 @@ function render() {
   // 俘虜
   for (const pr of map.prisoners) { ctx.strokeStyle = 'rgba(220,120,220,0.9)'; ctx.lineWidth = 2.5 / view.scale; const r = 7 / view.scale; ctx.beginPath(); ctx.moveTo(pr.x - r, pr.y - r); ctx.lineTo(pr.x + r, pr.y + r); ctx.moveTo(pr.x + r, pr.y - r); ctx.lineTo(pr.x - r, pr.y + r); ctx.stroke(); }
 
-  // 選取高亮 + 新建預覽
-  drawSelection();
+  // 選取高亮 + 群組外框 + 新建預覽
+  if (selRefs.length > 1) drawGroupBox(); else drawSelection();
   drawDragPreview();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+function drawGroupBox() {
+  const b = bboxOfRefs(selRefs); if (!b) return;
+  ctx.strokeStyle = 'rgba(255,210,122,0.9)'; ctx.lineWidth = 1.5 / view.scale; ctx.setLineDash([6 / view.scale, 4 / view.scale]);
+  ctx.strokeRect(b.minx, b.miny, b.maxx - b.minx, b.maxy - b.miny); ctx.setLineDash([]);
+  const W = b.maxx - b.minx, H = b.maxy - b.miny, s = 4 / view.scale;
+  ctx.fillStyle = '#ffd27a';
+  for (const [hx, hy] of GHANDLES) { const x = b.minx + hx * W, y = b.miny + hy * H; ctx.fillRect(x - s, y - s, s * 2, s * 2); }
+  // 標出個別成員
+  ctx.strokeStyle = 'rgba(255,210,122,0.5)'; ctx.lineWidth = 1 / view.scale;
+  for (const r of selRefs) { const rb = refBounds(r); ctx.strokeRect(rb.minx, rb.miny, Math.max(2 / view.scale, rb.maxx - rb.minx), Math.max(2 / view.scale, rb.maxy - rb.miny)); }
 }
 function drawDestruct(d, a) {
   const A = { x: d.x1, y: d.y1 }, B = { x: d.x2, y: d.y2 }, f = d.intact;
@@ -667,9 +902,11 @@ function drawSelection() {
 }
 function drawDragPreview() {
   if (!drag) return;
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 2 / view.scale; ctx.setLineDash([5 / view.scale, 4 / view.scale]);
-  if (drag.kind === 'newseg') line(drag.start, drag.end);
-  else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); }
+  ctx.lineWidth = 2 / view.scale; ctx.setLineDash([5 / view.scale, 4 / view.scale]);
+  if (drag.kind === 'newseg') { ctx.strokeStyle = 'rgba(255,255,255,0.7)'; line(drag.start, drag.end); }
+  else if (drag.kind === 'newbush') { ctx.strokeStyle = 'rgba(255,255,255,0.7)'; const a = drag.start, b = drag.end; ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); }
+  else if (drag.kind === 'marquee') { ctx.strokeStyle = 'rgba(127,227,255,0.9)'; ctx.fillStyle = 'rgba(127,227,255,0.08)'; const x = Math.min(drag.x1, drag.x2), y = Math.min(drag.y1, drag.y2), w = Math.abs(drag.x2 - drag.x1), hh = Math.abs(drag.y2 - drag.y1); ctx.fillRect(x, y, w, hh); ctx.strokeRect(x, y, w, hh); }
+  else if (drag.kind === 'newfeature') { const a = drag.start, b = drag.end, box = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; ctx.strokeStyle = 'rgba(127,227,255,0.6)'; ctx.strokeRect(box.x, box.y, box.w, box.h); ctx.setLineDash([]); if (box.w > 4 && box.h > 4) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 3 / view.scale; for (const it of FEATURES[featureIdx].build(box, featureOpt)) if (it.x1 != null) line({ x: it.x1, y: it.y1 }, { x: it.x2, y: it.y2 }); } }
   ctx.setLineDash([]);
 }
 
@@ -706,7 +943,7 @@ function init() {
   function sel0() { if (ovText.select) ovText.select(); }
 
   // 畫布事件
-  const sxsy = (e) => { const r = cv.getBoundingClientRect(); return { _sx: e.clientX - r.left, _sy: e.clientY - r.top, button: e.button }; };
+  const sxsy = (e) => { const r = cv.getBoundingClientRect(); return { _sx: e.clientX - r.left, _sy: e.clientY - r.top, button: e.button, shift: e.shiftKey }; };
   cv.addEventListener('mousedown', e => { onDown(Object.assign(sxsy(e), {})); });
   window.addEventListener('mousemove', e => { onMove(sxsy(e)); });
   window.addEventListener('mouseup', e => onUp(sxsy(e)));
@@ -720,7 +957,7 @@ function init() {
     else if ((e.ctrlKey || e.metaKey) && (k === 'y' || (k === 'z' && e.shiftKey))) { redo(); e.preventDefault(); }
     else if (k === 'delete' || k === 'backspace') { removeSelected(); rebuildInspector(); }
     else if (k === 'g') { snap = snap > 0 ? 0 : 20; gridBtn.textContent = '格線:' + (snap > 0 ? '開' : '關'); }
-    else if (k === 'escape') { sel = null; linkFrom = null; rebuildInspector(); }
+    else if (k === 'escape') { clearSel(); rebuildInspector(); }
   });
   window.addEventListener('keyup', e => { if (e.key === ' ') spaceDown = false; });
   window.addEventListener('resize', resize);
