@@ -387,27 +387,40 @@ function loadUnderlayFile(file) {
 }
 function clearUnderlay() { underlay.img = null; underlay.src = null; underlay.w = underlay.h = 0; persistUnderlay(); }
 function persistUnderlay() {
-  try { localStorage.setItem(UNDERLAY_KEY, JSON.stringify({ src: underlay.src, x: underlay.x, y: underlay.y, scale: underlay.scale, opacity: underlay.opacity, visible: underlay.visible })); } catch (e) { /* 配額不足：底圖不持久化，無妨 */ }
+  try { localStorage.setItem(UNDERLAY_KEY, JSON.stringify({ src: underlay.src, x: underlay.x, y: underlay.y, scale: underlay.scale, rot: underlay.rot, opacity: underlay.opacity, visible: underlay.visible })); } catch (e) { /* 配額不足：底圖不持久化，無妨 */ }
 }
 function restoreUnderlay() {
   let r = null; try { r = JSON.parse(localStorage.getItem(UNDERLAY_KEY) || 'null'); } catch (e) { return; }
   if (!r) return;
-  underlay.x = r.x || 0; underlay.y = r.y || 0; underlay.scale = r.scale || 1; underlay.opacity = r.opacity != null ? r.opacity : 0.5; underlay.visible = r.visible !== false;
+  underlay.x = r.x || 0; underlay.y = r.y || 0; underlay.scale = r.scale || 1; underlay.rot = r.rot || 0; underlay.opacity = r.opacity != null ? r.opacity : 0.5; underlay.visible = r.visible !== false;
   if (r.src) loadUnderlaySrc(r.src);
 }
-const underlayBounds = () => ({ minx: underlay.x, miny: underlay.y, maxx: underlay.x + underlay.w * underlay.scale, maxy: underlay.y + underlay.h * underlay.scale });
-const UCORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];
-function underlayHandleHit(p) {
-  if (!underlay.img) return null;
-  const b = underlayBounds(), W = b.maxx - b.minx, H = b.maxy - b.miny;
-  for (const [hx, hy] of UCORNERS) { const hp = { x: b.minx + hx * W, y: b.miny + hy * H }; if (dist(p, hp) < wr(10)) return { hx, hy }; }
-  return null;
+const UCORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];          // TL,TR,BR,BL
+const uWH = () => ({ W: underlay.w * underlay.scale, H: underlay.h * underlay.scale });
+const uCenter = () => { const { W, H } = uWH(); return { x: underlay.x + W / 2, y: underlay.y + H / 2 }; };
+function uHandleWorld(hx, hy) {                              // 旋轉後角點世界座標
+  const { W, H } = uWH(), C = uCenter(), r = underlay.rot || 0, lx = hx * W - W / 2, ly = hy * H - H / 2, c = Math.cos(r), s = Math.sin(r);
+  return { x: C.x + lx * c - ly * s, y: C.y + lx * s + ly * c };
 }
-function underlayScale(w) {                                 // 等比，錨定對角；用游標 X 與錨點距離定比例
-  const b = drag.base, W0 = underlay.w * b.scale, H0 = underlay.h * b.scale, hx = drag.h.hx, hy = drag.h.hy;
-  const anchorX = b.x + (1 - hx) * W0, anchorY = b.y + (1 - hy) * H0;
-  const ns = Math.max(0.02, Math.abs(w.x - anchorX) / (underlay.w || 1));
-  underlay.scale = ns; underlay.x = anchorX - (1 - hx) * underlay.w * ns; underlay.y = anchorY - (1 - hy) * underlay.h * ns;
+function uRotHandleWorld() {                                 // 旋轉把手（上方中央外側）
+  const { W, H } = uWH(), C = uCenter(), r = underlay.rot || 0, ly = -H / 2 - wr(28), c = Math.cos(r), s = Math.sin(r);
+  return { x: C.x - ly * s, y: C.y + ly * c };
+}
+function uInside(p) {                                        // 游標是否在（旋轉後的）圖內
+  const { W, H } = uWH(), C = uCenter(), r = -(underlay.rot || 0), dx = p.x - C.x, dy = p.y - C.y, c = Math.cos(r), s = Math.sin(r);
+  const lx = dx * c - dy * s, ly = dx * s + dy * c; return Math.abs(lx) <= W / 2 && Math.abs(ly) <= H / 2;
+}
+function underlayScale(w) {                                  // 等比，錨定對角；旋轉感知
+  const b = drag.base, r = b.rot, hx = drag.h.hx, hy = drag.h.hy, W0 = underlay.w * b.scale, H0 = underlay.h * b.scale;
+  const C0 = { x: b.x + W0 / 2, y: b.y + H0 / 2 }, c = Math.cos(r), s = Math.sin(r);
+  const aLx = (1 - hx) * W0 - W0 / 2, aLy = (1 - hy) * H0 - H0 / 2;
+  const anchor = { x: C0.x + aLx * c - aLy * s, y: C0.y + aLx * s + aLy * c };   // 對角錨點（固定）
+  const dx = w.x - anchor.x, dy = w.y - anchor.y, localX = dx * Math.cos(-r) - dy * Math.sin(-r);  // 沿圖寬軸投影
+  const ns = Math.max(0.02, Math.abs(localX) / (underlay.w || 1));
+  underlay.scale = ns; const newW = underlay.w * ns, newH = underlay.h * ns;
+  const fLx = (1 - hx) * newW - newW / 2, fLy = (1 - hy) * newH - newH / 2;       // 新尺寸下錨角相對中心
+  const Cx = anchor.x - (fLx * c - fLy * s), Cy = anchor.y - (fLx * s + fLy * c);
+  underlay.x = Cx - newW / 2; underlay.y = Cy - newH / 2;
 }
 
 /* =====================================================================
@@ -504,7 +517,7 @@ let featureOpt = 0;        // 特徵子選項（門側/方向/角落…）
 let lastPick = null;       // 重疊點擊循環：{p, all, i}
 let mouseShift = false;    // 目前 Shift 是否按住（縮放等比用）
 // 參考底圖（編輯器專用，不進 map、不匯出；存自己的 localStorage 鍵）
-let underlay = { img: null, src: null, x: 100, y: 60, scale: 1, opacity: 0.5, visible: true, w: 0, h: 0 };
+let underlay = { img: null, src: null, x: 100, y: 60, scale: 1, rot: 0, opacity: 0.5, visible: true, w: 0, h: 0 };
 
 const snapV = (v) => snap > 0 ? Math.round(v / snap) * snap : v;
 const snapP = (p) => ({ x: snapV(p.x), y: snapV(p.y) });
@@ -602,10 +615,9 @@ function onDown(e) {
 }
 function downUnderlay(w) {
   if (!underlay.img) return;
-  const hh = underlayHandleHit(w);
-  if (hh) { drag = { kind: 'uscale', h: hh, base: { x: underlay.x, y: underlay.y, scale: underlay.scale }, did: false }; return; }
-  const b = underlayBounds();
-  if (w.x >= b.minx && w.x <= b.maxx && w.y >= b.miny && w.y <= b.maxy) drag = { kind: 'umove', start: w, base: { x: underlay.x, y: underlay.y }, did: false };
+  if (dist(w, uRotHandleWorld()) < wr(11)) { drag = { kind: 'urotate', did: false }; return; }
+  for (const [hx, hy] of UCORNERS) if (dist(w, uHandleWorld(hx, hy)) < wr(11)) { drag = { kind: 'uscale', h: { hx, hy }, base: { x: underlay.x, y: underlay.y, scale: underlay.scale, rot: underlay.rot || 0 }, did: false }; return; }
+  if (uInside(w)) drag = { kind: 'umove', start: w, base: { x: underlay.x, y: underlay.y }, did: false };
 }
 function downObjects(w) {
   if (tool === 'select') {
@@ -692,6 +704,7 @@ function onMove(e) {
     case 'gscale': groupScale(w); break;
     case 'umove': underlay.x = drag.base.x + (w.x - drag.start.x); underlay.y = drag.base.y + (w.y - drag.start.y); break;
     case 'uscale': underlayScale(w); break;
+    case 'urotate': { const C = uCenter(); let a = Math.atan2(w.y - C.y, w.x - C.x) + Math.PI / 2; if (mouseShift) a = Math.round(a / (Math.PI / 12)) * (Math.PI / 12); underlay.rot = a; break; }
   }
 }
 function groupScale(w) {
@@ -712,7 +725,7 @@ function onUp(e) {
   else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'bush', ref: addBush(a.x, a.y, b.x - a.x, b.y - a.y) }; selRefs = [sel]; } }
   else if (drag.kind === 'newfeature') { const a = drag.start, b = drag.end; const box = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; if (box.w > 8 && box.h > 8) { selRefs = stampFeature(featureIdx, box); sel = selRefs.length === 1 ? selRefs[0] : null; } }
   else if (drag.kind === 'marquee') { selRefs = marqueeCollect(drag); sel = selRefs.length === 1 ? selRefs[0] : null; }
-  else if (drag.kind === 'umove' || drag.kind === 'uscale') { persistUnderlay(); }
+  else if (drag.kind === 'umove' || drag.kind === 'uscale' || drag.kind === 'urotate') { persistUnderlay(); }
   drag = null; rebuildInspector();
 }
 // 拖曳移動/改端點/群組變換：第一次真正動到時才記一筆 undo（新建類在 add*/stamp 內已記）
@@ -763,6 +776,7 @@ function renderUnderlayInspector(h) {
   inspectorEl.appendChild(field('x', numInput(underlay.x, v => { underlay.x = v; persistUnderlay(); })));
   inspectorEl.appendChild(field('y', numInput(underlay.y, v => { underlay.y = v; persistUnderlay(); })));
   inspectorEl.appendChild(field('縮放%', numInput(Math.round(underlay.scale * 100), v => { underlay.scale = Math.max(0.02, v / 100); persistUnderlay(); })));
+  inspectorEl.appendChild(field('旋轉°', numInput(Math.round((underlay.rot || 0) * 180 / Math.PI), v => { underlay.rot = v * Math.PI / 180; persistUnderlay(); })));
   const op = document.createElement('input'); op.type = 'range'; op.min = 0; op.max = 1; op.step = 0.05; op.value = underlay.opacity; op.style.flex = '1';
   op.addEventListener('input', () => { underlay.opacity = +op.value; persistUnderlay(); }); inspectorEl.appendChild(field('透明度', op));
   const vis = document.createElement('input'); vis.type = 'checkbox'; vis.checked = underlay.visible;
@@ -886,7 +900,7 @@ function render() {
   // 世界範圍 + 格線
   ctx.fillStyle = '#0a0e15'; ctx.fillRect(0, 0, WORLD.w, WORLD.h);
   // 參考底圖（世界背景之上、其餘之下；所有分頁皆顯示，僅 底圖 分頁可操作）
-  if (underlay.img && underlay.visible) { ctx.globalAlpha = underlay.opacity; try { ctx.drawImage(underlay.img, underlay.x, underlay.y, underlay.w * underlay.scale, underlay.h * underlay.scale); } catch (e) {} ctx.globalAlpha = 1; }
+  if (underlay.img && underlay.visible) { const { W, H } = uWH(), C = uCenter(); ctx.save(); ctx.globalAlpha = underlay.opacity; ctx.translate(C.x, C.y); ctx.rotate(underlay.rot || 0); try { ctx.drawImage(underlay.img, -W / 2, -H / 2, W, H); } catch (e) {} ctx.restore(); }
   if (snap > 0) { ctx.strokeStyle = 'rgba(80,100,120,0.12)'; ctx.lineWidth = 1 / view.scale; ctx.beginPath(); for (let x = 0; x <= WORLD.w; x += snap) { ctx.moveTo(x, 0); ctx.lineTo(x, WORLD.h); } for (let y = 0; y <= WORLD.h; y += snap) { ctx.moveTo(0, y); ctx.lineTo(WORLD.w, y); } ctx.stroke(); }
   ctx.strokeStyle = '#2a3442'; ctx.lineWidth = 2 / view.scale; ctx.strokeRect(0, 0, WORLD.w, WORLD.h);
 
@@ -927,11 +941,13 @@ function render() {
   // 俘虜
   for (const pr of map.prisoners) { ctx.strokeStyle = 'rgba(220,120,220,0.9)'; ctx.lineWidth = 2.5 / view.scale; const r = 7 / view.scale; ctx.beginPath(); ctx.moveTo(pr.x - r, pr.y - r); ctx.lineTo(pr.x + r, pr.y + r); ctx.moveTo(pr.x + r, pr.y - r); ctx.lineTo(pr.x - r, pr.y + r); ctx.stroke(); }
 
-  // 底圖操作框（僅 底圖 分頁）
+  // 底圖操作框（僅 底圖 分頁；旋轉感知）
   if (tab === 'underlay' && underlay.img) {
-    const b = underlayBounds(), s = 5 / view.scale;
-    ctx.strokeStyle = 'rgba(127,227,255,0.9)'; ctx.lineWidth = 1.5 / view.scale; ctx.setLineDash([6 / view.scale, 4 / view.scale]); ctx.strokeRect(b.minx, b.miny, b.maxx - b.minx, b.maxy - b.miny); ctx.setLineDash([]);
-    ctx.fillStyle = '#7fe3ff'; for (const [hx, hy] of UCORNERS) ctx.fillRect(b.minx + hx * (b.maxx - b.minx) - s, b.miny + hy * (b.maxy - b.miny) - s, s * 2, s * 2);
+    const cs = UCORNERS.map(([hx, hy]) => uHandleWorld(hx, hy)), s = 5 / view.scale;
+    ctx.strokeStyle = 'rgba(127,227,255,0.9)'; ctx.lineWidth = 1.5 / view.scale; ctx.setLineDash([6 / view.scale, 4 / view.scale]);
+    ctx.beginPath(); ctx.moveTo(cs[0].x, cs[0].y); for (let i = 1; i < 4; i++) ctx.lineTo(cs[i].x, cs[i].y); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#7fe3ff'; for (const c of cs) ctx.fillRect(c.x - s, c.y - s, s * 2, s * 2);
+    const rh = uRotHandleWorld(); ctx.strokeStyle = 'rgba(127,227,255,0.7)'; ctx.lineWidth = 1.5 / view.scale; line({ x: (cs[0].x + cs[1].x) / 2, y: (cs[0].y + cs[1].y) / 2 }, rh); dot(rh, 6 / view.scale, '#ffd27a');
   }
   // 選取高亮 + 群組外框 + 新建預覽
   if (selRefs.length > 1) drawGroupBox(); else drawSelection();
