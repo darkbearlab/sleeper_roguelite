@@ -51,6 +51,7 @@
     <span class="tabbtn on" data-tab="objects">① 地圖物件</span>
     <span class="tabbtn" data-tab="waypoints">② Waypoint/連線</span>
     <span class="tabbtn" data-tab="enemies">③ 敵人配置</span>
+    <span class="tabbtn" data-tab="underlay">④ 底圖</span>
     <span id="btnbar">
       <label class="muted">名稱</label><input id="mapLabel" style="width:120px">
       <select id="tplSel" title="載入範本/現有地圖"></select>
@@ -371,6 +372,45 @@ function scaleRefFrom(r, base, ax, ay, sx, sy) {
 }
 
 /* =====================================================================
+   參考底圖（editor-only；不在 map、不匯出；自己的 localStorage 鍵）
+   ===================================================================== */
+const UNDERLAY_KEY = 'sleeper_editor_underlay';
+function loadUnderlaySrc(src) {
+  if (typeof Image === 'undefined') return;               // headless：無 Image，略過
+  const img = new Image();
+  img.onload = () => { underlay.img = img; underlay.w = img.width || 1; underlay.h = img.height || 1; underlay.src = src; persistUnderlay(); if (domReady) rebuildInspector(); };
+  img.src = src;
+}
+function loadUnderlayFile(file) {
+  if (!file || typeof FileReader === 'undefined') return;
+  const fr = new FileReader(); fr.onload = () => loadUnderlaySrc(fr.result); fr.readAsDataURL(file);
+}
+function clearUnderlay() { underlay.img = null; underlay.src = null; underlay.w = underlay.h = 0; persistUnderlay(); }
+function persistUnderlay() {
+  try { localStorage.setItem(UNDERLAY_KEY, JSON.stringify({ src: underlay.src, x: underlay.x, y: underlay.y, scale: underlay.scale, opacity: underlay.opacity, visible: underlay.visible })); } catch (e) { /* 配額不足：底圖不持久化，無妨 */ }
+}
+function restoreUnderlay() {
+  let r = null; try { r = JSON.parse(localStorage.getItem(UNDERLAY_KEY) || 'null'); } catch (e) { return; }
+  if (!r) return;
+  underlay.x = r.x || 0; underlay.y = r.y || 0; underlay.scale = r.scale || 1; underlay.opacity = r.opacity != null ? r.opacity : 0.5; underlay.visible = r.visible !== false;
+  if (r.src) loadUnderlaySrc(r.src);
+}
+const underlayBounds = () => ({ minx: underlay.x, miny: underlay.y, maxx: underlay.x + underlay.w * underlay.scale, maxy: underlay.y + underlay.h * underlay.scale });
+const UCORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]];
+function underlayHandleHit(p) {
+  if (!underlay.img) return null;
+  const b = underlayBounds(), W = b.maxx - b.minx, H = b.maxy - b.miny;
+  for (const [hx, hy] of UCORNERS) { const hp = { x: b.minx + hx * W, y: b.miny + hy * H }; if (dist(p, hp) < wr(10)) return { hx, hy }; }
+  return null;
+}
+function underlayScale(w) {                                 // 等比，錨定對角；用游標 X 與錨點距離定比例
+  const b = drag.base, W0 = underlay.w * b.scale, H0 = underlay.h * b.scale, hx = drag.h.hx, hy = drag.h.hy;
+  const anchorX = b.x + (1 - hx) * W0, anchorY = b.y + (1 - hy) * H0;
+  const ns = Math.max(0.02, Math.abs(w.x - anchorX) / (underlay.w || 1));
+  underlay.scale = ns; underlay.x = anchorX - (1 - hx) * underlay.w * ns; underlay.y = anchorY - (1 - hy) * underlay.h * ns;
+}
+
+/* =====================================================================
    匯出 / 匯入
    ===================================================================== */
 function exportClean() {
@@ -463,6 +503,8 @@ let featureIdx = 0;        // 目前特徵
 let featureOpt = 0;        // 特徵子選項（門側/方向/角落…）
 let lastPick = null;       // 重疊點擊循環：{p, all, i}
 let mouseShift = false;    // 目前 Shift 是否按住（縮放等比用）
+// 參考底圖（編輯器專用，不進 map、不匯出；存自己的 localStorage 鍵）
+let underlay = { img: null, src: null, x: 100, y: 60, scale: 1, opacity: 0.5, visible: true, w: 0, h: 0 };
 
 const snapV = (v) => snap > 0 ? Math.round(v / snap) * snap : v;
 const snapP = (p) => ({ x: snapV(p.x), y: snapV(p.y) });
@@ -474,6 +516,7 @@ const TOOLSETS = {
   objects: [['select', '選取/移動'], ['feature', '★特徵'], ['wall', '牆'], ['door', '門'], ['lowwall', '低矮牆'], ['destruct', '破壞物'], ['bush', '草叢'], ['button', '按鈕'], ['entry', '進場點'], ['extract', '撤離點'], ['erase', '刪除']],
   waypoints: [['move', '選取/移動'], ['add', '加點'], ['link', '連線'], ['erase', '刪除']],
   enemies: [['assign', '指派敵人'], ['prisoner', '俘虜'], ['erase', '刪除']],
+  underlay: [['umove', '移動/縮放底圖']],
 };
 function clearSel() { sel = null; selRefs = []; marquee = null; linkFrom = null; lastPick = null; }
 function setTab(t) { tab = t; tool = TOOLSETS[t][0][0]; clearSel(); rebuildUI(); }
@@ -553,8 +596,16 @@ function onDown(e) {
   const w = s2w({ x: e._sx, y: e._sy });
   if (tab === 'objects') downObjects(w);
   else if (tab === 'waypoints') downWaypoints(w);
-  else downEnemies(w);
+  else if (tab === 'enemies') downEnemies(w);
+  else if (tab === 'underlay') downUnderlay(w);
   rebuildInspector();
+}
+function downUnderlay(w) {
+  if (!underlay.img) return;
+  const hh = underlayHandleHit(w);
+  if (hh) { drag = { kind: 'uscale', h: hh, base: { x: underlay.x, y: underlay.y, scale: underlay.scale }, did: false }; return; }
+  const b = underlayBounds();
+  if (w.x >= b.minx && w.x <= b.maxx && w.y >= b.miny && w.y <= b.maxy) drag = { kind: 'umove', start: w, base: { x: underlay.x, y: underlay.y }, did: false };
 }
 function downObjects(w) {
   if (tool === 'select') {
@@ -639,6 +690,8 @@ function onMove(e) {
     case 'facing': { const s = spawnAt(drag.nodeId); if (s) { const node = map.waypoints[s.nodeId].pos; s.facing = Math.atan2(w.y - node.y, w.x - node.x); } break; }
     case 'gmove': { const dx = snapV(w.x - drag.start.x), dy = snapV(w.y - drag.start.y); selRefs.forEach((r, i) => { setRefCoords(r, Object.assign({}, drag.base[i])); moveRef(r, dx, dy); }); break; }
     case 'gscale': groupScale(w); break;
+    case 'umove': underlay.x = drag.base.x + (w.x - drag.start.x); underlay.y = drag.base.y + (w.y - drag.start.y); break;
+    case 'uscale': underlayScale(w); break;
   }
 }
 function groupScale(w) {
@@ -659,6 +712,7 @@ function onUp(e) {
   else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'bush', ref: addBush(a.x, a.y, b.x - a.x, b.y - a.y) }; selRefs = [sel]; } }
   else if (drag.kind === 'newfeature') { const a = drag.start, b = drag.end; const box = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; if (box.w > 8 && box.h > 8) { selRefs = stampFeature(featureIdx, box); sel = selRefs.length === 1 ? selRefs[0] : null; } }
   else if (drag.kind === 'marquee') { selRefs = marqueeCollect(drag); sel = selRefs.length === 1 ? selRefs[0] : null; }
+  else if (drag.kind === 'umove' || drag.kind === 'uscale') { persistUnderlay(); }
   drag = null; rebuildInspector();
 }
 // 拖曳移動/改端點/群組變換：第一次真正動到時才記一筆 undo（新建類在 add*/stamp 內已記）
@@ -676,7 +730,7 @@ function onContext(w) { const h = (tab === 'objects') ? hitObjects(w) : null; if
 /* =====================================================================
    DOM 介面
    ===================================================================== */
-let cv, ctx, toolsEl, inspectorEl, statusEl, mapLabelEl, tplSelEl, overlayEl, ovTitle, ovText, ovMsg, ovBtns, gridBtn;
+let cv, ctx, toolsEl, inspectorEl, statusEl, mapLabelEl, tplSelEl, overlayEl, ovTitle, ovText, ovMsg, ovBtns, gridBtn, uFileInput;
 let spaceDown = false, domReady = false;
 
 function rebuildUI() { if (!domReady) return; rebuildToolsUI(); rebuildInspector(); if (mapLabelEl) mapLabelEl.value = map.label; updateStatus(); }
@@ -701,11 +755,27 @@ function rebuildToolsUI() {
 }
 function field(label, inputEl) { const r = document.createElement('div'); r.className = 'row'; const l = document.createElement('label'); l.textContent = label; r.appendChild(l); r.appendChild(inputEl); return r; }
 function numInput(val, on) { const i = document.createElement('input'); i.type = 'number'; i.value = Math.round(val); i.addEventListener('input', () => { if (i.value !== '' && i.value !== '-') { on(+i.value); } }); return i; }
+function renderUnderlayInspector(h) {
+  h.textContent = '底圖（參考用，不匯出）';
+  const load = document.createElement('button'); load.textContent = '載入圖片…'; load.style.width = '100%'; load.style.margin = '2px 0 6px';
+  load.addEventListener('click', () => { if (uFileInput) uFileInput.click(); }); inspectorEl.appendChild(load);
+  if (!underlay.img) { const p = document.createElement('div'); p.className = 'muted'; p.textContent = '載入一張真實街區/建築平面圖，墊在地圖下方描著畫。底圖只供參考，不會被匯出。'; inspectorEl.appendChild(p); return; }
+  inspectorEl.appendChild(field('x', numInput(underlay.x, v => { underlay.x = v; persistUnderlay(); })));
+  inspectorEl.appendChild(field('y', numInput(underlay.y, v => { underlay.y = v; persistUnderlay(); })));
+  inspectorEl.appendChild(field('縮放%', numInput(Math.round(underlay.scale * 100), v => { underlay.scale = Math.max(0.02, v / 100); persistUnderlay(); })));
+  const op = document.createElement('input'); op.type = 'range'; op.min = 0; op.max = 1; op.step = 0.05; op.value = underlay.opacity; op.style.flex = '1';
+  op.addEventListener('input', () => { underlay.opacity = +op.value; persistUnderlay(); }); inspectorEl.appendChild(field('透明度', op));
+  const vis = document.createElement('input'); vis.type = 'checkbox'; vis.checked = underlay.visible;
+  vis.addEventListener('change', () => { underlay.visible = vis.checked; persistUnderlay(); }); inspectorEl.appendChild(field('顯示', vis));
+  const tip = document.createElement('div'); tip.className = 'muted'; tip.textContent = '畫布上拖圖移動、拖四角縮放（等比）。'; inspectorEl.appendChild(tip);
+  const r = document.createElement('div'); r.className = 'row'; r.style.marginTop = '8px'; const c = document.createElement('button'); c.textContent = '清除底圖'; c.style.flex = '1'; c.addEventListener('click', () => { clearUnderlay(); rebuildInspector(); }); r.appendChild(c); inspectorEl.appendChild(r);
+}
 
 function rebuildInspector() {
   if (!inspectorEl) return;
   inspectorEl.innerHTML = '';
   const h = document.createElement('h3'); inspectorEl.appendChild(h);
+  if (tab === 'underlay') { renderUnderlayInspector(h); return; }
   if (selRefs.length > 1) {
     h.textContent = '群組（' + selRefs.length + ' 物件）';
     const p = document.createElement('div'); p.className = 'muted'; p.textContent = '拖外框內部＝整組移動；拖角/邊控制點＝縮放（Shift 等比）。'; inspectorEl.appendChild(p);
@@ -815,6 +885,8 @@ function render() {
   ctx.lineJoin = 'round';
   // 世界範圍 + 格線
   ctx.fillStyle = '#0a0e15'; ctx.fillRect(0, 0, WORLD.w, WORLD.h);
+  // 參考底圖（世界背景之上、其餘之下；所有分頁皆顯示，僅 底圖 分頁可操作）
+  if (underlay.img && underlay.visible) { ctx.globalAlpha = underlay.opacity; try { ctx.drawImage(underlay.img, underlay.x, underlay.y, underlay.w * underlay.scale, underlay.h * underlay.scale); } catch (e) {} ctx.globalAlpha = 1; }
   if (snap > 0) { ctx.strokeStyle = 'rgba(80,100,120,0.12)'; ctx.lineWidth = 1 / view.scale; ctx.beginPath(); for (let x = 0; x <= WORLD.w; x += snap) { ctx.moveTo(x, 0); ctx.lineTo(x, WORLD.h); } for (let y = 0; y <= WORLD.h; y += snap) { ctx.moveTo(0, y); ctx.lineTo(WORLD.w, y); } ctx.stroke(); }
   ctx.strokeStyle = '#2a3442'; ctx.lineWidth = 2 / view.scale; ctx.strokeRect(0, 0, WORLD.w, WORLD.h);
 
@@ -855,6 +927,12 @@ function render() {
   // 俘虜
   for (const pr of map.prisoners) { ctx.strokeStyle = 'rgba(220,120,220,0.9)'; ctx.lineWidth = 2.5 / view.scale; const r = 7 / view.scale; ctx.beginPath(); ctx.moveTo(pr.x - r, pr.y - r); ctx.lineTo(pr.x + r, pr.y + r); ctx.moveTo(pr.x + r, pr.y - r); ctx.lineTo(pr.x - r, pr.y + r); ctx.stroke(); }
 
+  // 底圖操作框（僅 底圖 分頁）
+  if (tab === 'underlay' && underlay.img) {
+    const b = underlayBounds(), s = 5 / view.scale;
+    ctx.strokeStyle = 'rgba(127,227,255,0.9)'; ctx.lineWidth = 1.5 / view.scale; ctx.setLineDash([6 / view.scale, 4 / view.scale]); ctx.strokeRect(b.minx, b.miny, b.maxx - b.minx, b.maxy - b.miny); ctx.setLineDash([]);
+    ctx.fillStyle = '#7fe3ff'; for (const [hx, hy] of UCORNERS) ctx.fillRect(b.minx + hx * (b.maxx - b.minx) - s, b.miny + hy * (b.maxy - b.miny) - s, s * 2, s * 2);
+  }
   // 選取高亮 + 群組外框 + 新建預覽
   if (selRefs.length > 1) drawGroupBox(); else drawSelection();
   drawDragPreview();
@@ -961,6 +1039,12 @@ function init() {
   });
   window.addEventListener('keyup', e => { if (e.key === ' ') spaceDown = false; });
   window.addEventListener('resize', resize);
+
+  // 底圖檔案輸入（隱藏）
+  uFileInput = document.createElement('input'); uFileInput.type = 'file'; uFileInput.accept = 'image/*'; uFileInput.style.display = 'none';
+  uFileInput.addEventListener('change', () => { if (uFileInput.files && uFileInput.files[0]) loadUnderlayFile(uFileInput.files[0]); uFileInput.value = ''; });
+  document.body.appendChild(uFileInput);
+  restoreUnderlay();
 
   resize(); fitView();
   loadTemplate('alpha');     // 開場載入 alpha 方便上手
