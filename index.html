@@ -676,6 +676,7 @@ let warehouse;               // 共用倉庫：未裝備物品 [{kind:'weapon'|'
 let backpack;                // 臨時背包：任務中撿到、待休息關處理 [{kind, id, ammo}]（無上限、任務中不可動用）
 let ammoStock;               // 共用彈藥儲備 {weaponId: number}（按武器類別）
 let drops;                   // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
+let corpses = [];            // 陣亡標記 [{x,y,enemy}]（地上叉叉，整場保留）
 let prisoners;               // 戰鬥中的俘虜 [{pos, freed}]（E 釋放→加入我方，撤離成功才入隊）
 let restPhase;               // 休息關流程：CHOICE | OFFERS | TARGET | DONE
 let restOffers, restPick, restPendingUpgrade;  // 搜刮抽選 / 已選 / 待指定目標的升級
@@ -795,7 +796,7 @@ function startMission() {
   for (const d of MAP.doors) d.open = false;     // 每場戰鬥門重置為關閉
   players = roster.map((r, i) => makePlayer(i, r, spawnPos(i, roster.length)));
   controlledId = 0;
-  enemies = []; bullets = []; particles = [];
+  enemies = []; bullets = []; particles = []; corpses = [];
   reservations = new Map(); enemyIdSeq = 1; drops = [];
   prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
   for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type); enemies.push(e); commitReservation(e, e.currentNode); }
@@ -835,7 +836,7 @@ function startIntro() {
   introCast = makeIntroCast();
   buildMapDerived('intro');
   for (const d of MAP.doors) d.open = false;
-  reservations = new Map(); enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = [];
+  reservations = new Map(); enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = []; corpses = [];
   // 主角＝players[0]（管制室，看著下方）；演出期由腳本移動，鏡頭固定，控制鎖住
   players = [makePlayer(0, introCast[0], { x: 390, y: 240 })];
   players[0].facing = Math.PI / 2; players[0].state = 'CONTROLLED'; controlledId = 0;
@@ -1272,6 +1273,7 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
 }
 function killUnit(u) {
   spawnDeath(u.pos);
+  corpses.push({ x: u.pos.x, y: u.pos.y, enemy: u.faction === 'enemy' });   // 地上留陣亡叉叉（整場保留）
   if (u.faction === 'enemy') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); }
   else {
     spawnDrop(u, CONFIG.ammo.salvageAlly);
@@ -1837,7 +1839,7 @@ function draw() {
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
   drawGrid(); drawBushes(); drawLowWalls(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
-  drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
+  drawCorpses(); drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
   if (debugView) drawDebug();
   ctx.restore();
 
@@ -1967,6 +1969,14 @@ function drawLowWalls() {
   for (const lw of MAP.lowWalls) { ctx.beginPath(); ctx.moveTo(lw.x1, lw.y1); ctx.lineTo(lw.x2, lw.y2); ctx.stroke(); }
   ctx.setLineDash([]); ctx.lineCap = 'round';
 }
+// 陣亡標記：地上叉叉（敵紅/我藍，整場保留；在世界層、會被迷霧蓋）
+function drawCorpses() {
+  ctx.lineWidth = 2; const r = 7;
+  for (const c of corpses) {
+    ctx.strokeStyle = c.enemy ? 'rgba(255,110,110,0.45)' : 'rgba(150,180,220,0.45)';
+    ctx.beginPath(); ctx.moveTo(c.x - r, c.y - r); ctx.lineTo(c.x + r, c.y + r); ctx.moveTo(c.x + r, c.y - r); ctx.lineTo(c.x - r, c.y + r); ctx.stroke();
+  }
+}
 // 遮蔽區（草叢）：半透明綠地塊（不擋移動/子彈/視線幾何；只讓「叢內單位」對叢外觀察者隱形）
 function drawBushes() {
   for (const b of (MAP.bushes || [])) {
@@ -2057,7 +2067,7 @@ function drawPlayers() {
 function drawEnemies() {
   for (const e of enemies) {
     if (e.dead) continue;
-    if (!debugView && !isRevealed(e)) continue;   // 未被我方感知（含躲草叢）→ 不繪，靠近/同叢才現形
+    if (!debugView && !isRevealed(e) && !(cutscene && cutscene.lock)) continue;   // 未被我方感知（含躲草叢）→ 不繪；演出鎖控制時交給聚光迷霧（同事永遠在聚光內）
     const low = e.hp / e.maxHp <= 0.4;
     const hue = e.isReinforce ? 18 : (e.type ? e.type.hue : 0);
     drawUnitBody(e, hsl(hue, 65, low ? 38 : 48), hsl(hue, 70, 65), 2);
