@@ -8,6 +8,7 @@
 
 ## 速記
 - 所有可調數值/內容在 `index.html` 檔頂：`CONFIG` / `WEAPONS` / `ABILITIES` / `EQUIPMENT` / `ITEMS` / `ARCHETYPES` / `ENEMY_TYPES`(敵人類型) / `DESTRUCT`(可破壞地形形態) / `MAPS`(多張戰鬥地圖) / `ROADMAP`。
+- **數值平衡面板（§4.21）**：按 `` ` `` 或右上齒輪開的 DOM 側欄，依物件結構自動生成滑桿/勾選、直接寫上列目錄的活值＝即時生效（武器是共用參考即時；彈夾/unitHp/敵人hp,armor 下次生成套用）。資料層(`tune*`/`applyTunerSaved`/`tuneOverrides`/localStorage 鍵 `sleeper_tuning_v1`)與 UI 層(`initTunerUI`，全包 try/catch、無 DOM 即停用)分離。新增 CONFIG 數值不必改面板。
 - 地形：牆/門/低矮牆/草叢(MAP.bushes)/**可破壞地形(MAP.destructibles：wall/glass/lowwall/fence/flat 兩形態+HP)**；五型預設(木箱/落地窗/有矮牆窗/全遮蔽/鐵網)。改地形阻擋邏輯看 segBlocked/collideWalls/onLowWall/updateBullets/canSee。詳見 §4.20。
 - 敵人＝資料驅動類型（`enemySpawns.type`，預設 grunt）：grunt/dog(警犬)/heavy_lmg/heavy_shot；重裝靠裝甲「機率整發擋下非穿甲」(武器 `pierce`)而非高血量。詳見 §4.16。
 - 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。

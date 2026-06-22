@@ -10,6 +10,35 @@
   #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
   canvas{background:#06080d;image-rendering:auto;cursor:crosshair;
     box-shadow:0 0 40px #000a;max-width:100%;max-height:100%;}
+  /* === 數值平衡面板（DOM 覆蓋層） === */
+  #tunerBtn{position:fixed;top:8px;right:10px;z-index:50;width:30px;height:30px;
+    border:1px solid #2a3442;background:rgba(16,21,29,0.8);color:#7fe3ff;border-radius:6px;
+    cursor:pointer;font-size:15px;line-height:26px;text-align:center;padding:0;}
+  #tunerBtn:hover{background:#1a2330;}
+  #tuner{position:fixed;top:0;right:0;width:380px;height:100%;z-index:49;box-sizing:border-box;
+    background:rgba(11,15,21,0.96);border-left:1px solid #2a3442;color:#cdd6e0;
+    display:none;flex-direction:column;font:12px Consolas,monospace;box-shadow:-6px 0 24px #0008;}
+  #tuner.open{display:flex;}
+  #tuner header{padding:8px 10px;border-bottom:1px solid #1f2733;display:flex;align-items:center;gap:8px;}
+  #tuner header b{color:#7fe3ff;font-size:14px;flex:1;}
+  #tuner header button{background:#15202c;border:1px solid #2a3442;color:#9fb3c8;border-radius:4px;cursor:pointer;width:24px;height:22px;}
+  #tuner .tabs{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;border-bottom:1px solid #1f2733;}
+  #tuner .tab{padding:3px 8px;border:1px solid #2a3442;border-radius:4px;background:#121823;color:#9fb3c8;cursor:pointer;}
+  #tuner .tab.on{background:#1d3247;color:#bfe6ff;border-color:#3a6b8f;}
+  #tuner .search{margin:6px 8px;padding:4px 6px;background:#0f141c;border:1px solid #2a3442;color:#cdd6e0;border-radius:4px;}
+  #tuner .body{flex:1;overflow-y:auto;padding:4px 8px 12px;}
+  #tuner details{margin:3px 0;border:1px solid #182030;border-radius:4px;}
+  #tuner details>div{padding-left:8px;}
+  #tuner summary{cursor:pointer;padding:3px 6px;color:#a8c0d8;background:#10161f;user-select:none;}
+  #tuner .row{display:flex;align-items:center;gap:6px;padding:2px 6px;}
+  #tuner .row label{flex:1;color:#9fb3c8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #tuner .row input[type=range]{width:96px;}
+  #tuner .row input[type=number]{width:64px;background:#0f141c;border:1px solid #2a3442;color:#e0e8f0;border-radius:3px;padding:1px 3px;}
+  #tuner .row.changed label{color:#ffd27a;}
+  #tuner footer{padding:8px;border-top:1px solid #1f2733;display:flex;gap:6px;align-items:center;}
+  #tuner footer button{padding:4px 8px;background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;}
+  #tuner .note{font-size:10px;color:#5a6470;padding:0 8px 6px;line-height:1.4;}
+  #tuner textarea{margin:0 8px 8px;width:auto;height:120px;background:#0f141c;border:1px solid #2a3442;color:#cdd6e0;font:11px Consolas;display:none;}
 </style>
 </head>
 <body>
@@ -1723,7 +1752,10 @@ function roadNodeAt(x, y) {
 }
 
 window.addEventListener('keydown', e => {
+  const tgt = e.target;
+  if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.tagName === 'SELECT')) return;   // 面板輸入框聚焦中：不傳給遊戲
   const k = e.key.toLowerCase();
+  if (k === '`' || k === '~') { toggleTuner(); e.preventDefault(); return; }   // 數值面板開關（任何場景）
   keys.add(k);
   if (e.repeat) return;
 
@@ -1775,7 +1807,7 @@ window.addEventListener('keydown', e => {
   if (k === 'j') hysteresisOn = !hysteresisOn;   // (debug) 原 H，因 H 改作撤離而移位
   if ([' ', 'w', 'a', 's', 'd'].includes(k)) e.preventDefault();
 });
-window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+window.addEventListener('keyup', e => { const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return; keys.delete(e.key.toLowerCase()); });
 
 /* =====================================================================
    Update — 固定時間步
@@ -2920,6 +2952,186 @@ function drawEditorUI() {
   if (editMsg) { ctx.fillStyle = '#ffe08a'; ctx.textAlign = 'right'; ctx.fillText(editMsg, cv.width - 14, cv.height - 8); ctx.textAlign = 'left'; }
 }
 function drawEditor() { ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height); drawEditorUI(); }
+
+/* =====================================================================
+   數值平衡面板（即時調參）— DOM 覆蓋層，直接寫入 CONFIG/WEAPONS/... 的「活值」
+   --------------------------------------------------------------------
+   設計：① 資料層（applyTunerSaved / tuneSet / overrides / localStorage）純函式、
+   與 DOM 完全分離，headless 測試可單獨驗證；② UI 層（initTunerUI/buildTunerBody）
+   全包在 try/catch，無 DOM 環境直接停用、不影響模擬。自動依物件結構生成控制項
+   （數字→滑桿+輸入框、布林→勾選），故新增 CONFIG 數值無須改面板。按 ` 或右上齒輪開關。
+   即時生效範圍：CONFIG 多為每幀讀取；武器數值＝單位共用同一參考(即時)，唯「彈夾大小」
+   於下次換彈/生成套用；unitHp / enemy.hp / ENEMY_TYPES 之 hp,armor 於下次生成套用。
+   ===================================================================== */
+const TUNE_ROOTS = { CONFIG, WEAPONS, ENEMY_TYPES, ABILITIES, EQUIPMENT, ITEMS };
+const TUNE_TABS = [
+  { key: 'CONFIG',  label: '核心',          roots: ['CONFIG'] },
+  { key: 'WEAPONS', label: '武器',          roots: ['WEAPONS'] },
+  { key: 'ENEMY',   label: '敵人',          roots: ['ENEMY_TYPES'] },
+  { key: 'KIT',     label: '技能/裝備/道具', roots: ['ABILITIES', 'EQUIPMENT', 'ITEMS'] },
+];
+const TUNE_STORE_KEY = 'sleeper_tuning_v1';
+const tuneClone = (o) => JSON.parse(JSON.stringify(o));
+const TUNE_DEFAULTS = {};                       // 純程式預設快照（套用 saved 前）；供「重設」還原
+for (const k in TUNE_ROOTS) TUNE_DEFAULTS[k] = tuneClone(TUNE_ROOTS[k]);
+let tuneOverrides = {};                          // 扁平覆寫表："ROOT.sub.key" -> 值（僅存與預設不同者）
+
+function tuneResolve(path) {                      // 解析路徑 → {obj,key}（活物件，供讀寫）
+  const parts = path.split('.'); let obj = TUNE_ROOTS[parts[0]];
+  for (let i = 1; i < parts.length - 1; i++) { if (obj == null) return null; obj = obj[parts[i]]; }
+  return obj == null ? null : { obj, key: parts[parts.length - 1] };
+}
+function tuneSet(path, v) { const r = tuneResolve(path); if (r) r.obj[r.key] = v; }
+function tuneGet(path) { const r = tuneResolve(path); return r ? r.obj[r.key] : undefined; }
+function tuneDefaultAt(path) {                    // 從預設快照取值（滑桿範圍/重設用）
+  const parts = path.split('.'); let o = TUNE_DEFAULTS[parts[0]];
+  for (let i = 1; i < parts.length; i++) { if (o == null) return 0; o = o[parts[i]]; }
+  return o;
+}
+function tunePersist() { try { localStorage.setItem(TUNE_STORE_KEY, JSON.stringify(tuneOverrides)); } catch (e) {} }
+function applyTunerSaved() {                      // 載入期：把本機存的覆寫寫回活物件（純資料，無 DOM）
+  let raw = null; try { raw = localStorage.getItem(TUNE_STORE_KEY); } catch (e) { return; }
+  if (!raw) return;
+  try { tuneOverrides = JSON.parse(raw) || {}; } catch (e) { tuneOverrides = {}; return; }
+  for (const path in tuneOverrides) { const v = tuneOverrides[path]; if (typeof v === 'number' || typeof v === 'boolean') tuneSet(path, v); }
+}
+function tuneRecordChange(path, val) {            // 寫活值 + 維護覆寫表 + 存檔
+  tuneSet(path, val);
+  if (val === tuneDefaultAt(path)) delete tuneOverrides[path]; else tuneOverrides[path] = val;
+  tunePersist();
+}
+function tunerExportText() {
+  const keys = Object.keys(tuneOverrides).sort();
+  if (!keys.length) return '// 目前無任何覆寫（全為預設值）';
+  return '// SLEEPER 數值覆寫 — 貼回 index.html 對應物件即永久套用；或保留在本機 localStorage\n'
+    + keys.map(p => p + ' = ' + JSON.stringify(tuneOverrides[p]) + ';').join('\n');
+}
+function restoreFromDefault(live, def) {          // 遞迴把活物件還原成預設
+  for (const key in def) { const dv = def[key];
+    if (dv && typeof dv === 'object' && !Array.isArray(dv)) { if (live[key]) restoreFromDefault(live[key], dv); }
+    else if (typeof dv === 'number' || typeof dv === 'boolean') live[key] = dv;
+  }
+}
+function tunerReset() {
+  for (const k in TUNE_ROOTS) restoreFromDefault(TUNE_ROOTS[k], TUNE_DEFAULTS[k]);
+  tuneOverrides = {}; tunePersist();
+  if (tunerBuilt) buildTunerBody();
+}
+applyTunerSaved();
+
+// ── UI 層（全包 try/catch；無 DOM 時 tunerEl 留 null，toggleTuner 變 no-op）──
+let tunerEl = null, tunerBody = null, tunerTab = 'CONFIG', tunerSearch = '', tunerRows = [], tunerBuilt = false;
+
+function tuneMakeSection(label, open) {
+  const d = document.createElement('details'); d.open = !!open;
+  const s = document.createElement('summary'); s.textContent = label; d.appendChild(s);
+  const c = document.createElement('div'); d.appendChild(c);
+  return { el: d, content: c };
+}
+function tuneMakeNumRow(path, key) {
+  const def = +tuneDefaultAt(path) || 0, cur = tuneGet(path);
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = key; lab.title = path; row.appendChild(lab);
+  const mag = Math.abs(def) || 1;
+  const step = mag >= 100 ? 1 : mag >= 10 ? 0.5 : mag >= 1 ? 0.1 : mag >= 0.1 ? 0.01 : 0.001;
+  const rng = document.createElement('input'); rng.type = 'range'; rng.step = step;
+  rng.min = def < 0 ? def * 2 : 0; rng.max = def < 0 ? 0 : (def === 0 ? 1 : mag * 4);
+  if (cur > +rng.max) rng.max = cur; if (cur < +rng.min) rng.min = cur; rng.value = cur;
+  const num = document.createElement('input'); num.type = 'number'; num.step = 'any'; num.value = cur;
+  const commit = (val) => {
+    if (!isFinite(val)) return;
+    if (val > +rng.max) rng.max = val; if (val < +rng.min) rng.min = val;
+    tuneRecordChange(path, val); row.classList.toggle('changed', val !== def);
+  };
+  rng.addEventListener('input', () => { const v = +rng.value; num.value = v; commit(v); });
+  num.addEventListener('input', () => { if (num.value === '' || num.value === '-') return; const v = +num.value; rng.value = v; commit(v); });
+  row.appendChild(rng); row.appendChild(num); row.classList.toggle('changed', cur !== def);
+  tunerRows.push({ path, row }); return row;
+}
+function tuneMakeBoolRow(path, key) {
+  const def = tuneDefaultAt(path), cur = tuneGet(path);
+  const row = document.createElement('div'); row.className = 'row';
+  const lab = document.createElement('label'); lab.textContent = key; lab.title = path; row.appendChild(lab);
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !!cur;
+  cb.addEventListener('change', () => { tuneRecordChange(path, cb.checked); row.classList.toggle('changed', cb.checked !== def); });
+  row.appendChild(cb); row.classList.toggle('changed', cur !== def);
+  tunerRows.push({ path, row }); return row;
+}
+function tuneBuildObj(obj, path, parent, depth) {
+  for (const key in obj) {
+    const v = obj[key], p = path + '.' + key;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const sec = tuneMakeSection(key, depth < 1); parent.appendChild(sec.el);
+      tuneBuildObj(v, p, sec.content, depth + 1);
+    } else if (typeof v === 'number') parent.appendChild(tuneMakeNumRow(p, key));
+    else if (typeof v === 'boolean') parent.appendChild(tuneMakeBoolRow(p, key));
+    // 字串(name/rarity/weaponId…)/陣列/函式：略過
+  }
+}
+function buildTunerBody() {
+  if (!tunerBody) return;
+  tunerBody.innerHTML = ''; tunerRows = [];
+  const tab = TUNE_TABS.find(t => t.key === tunerTab) || TUNE_TABS[0];
+  for (const rootKey of tab.roots) {
+    const sec = tuneMakeSection(rootKey, true); tunerBody.appendChild(sec.el);
+    tuneBuildObj(TUNE_ROOTS[rootKey], rootKey, sec.content, 0);
+  }
+  applyTunerFilter();
+}
+function applyTunerFilter() {
+  const q = tunerSearch.trim().toLowerCase();
+  for (const r of tunerRows) r.row.style.display = (!q || r.path.toLowerCase().includes(q)) ? 'flex' : 'none';
+}
+function toggleTuner(force) {
+  if (!tunerEl) return;
+  const open = force == null ? !tunerEl.classList.contains('open') : !!force;
+  if (open) {
+    if (!tunerBuilt) { buildTunerBody(); tunerBuilt = true; }
+    tunerEl.classList.add('open');
+    if (typeof document !== 'undefined' && document.exitPointerLock) { try { document.exitPointerLock(); } catch (e) {} }
+  } else tunerEl.classList.remove('open');
+}
+function initTunerUI() {
+  try {
+    if (typeof document === 'undefined' || !document.body || !document.createElement) return;
+    const btn = document.createElement('button'); btn.id = 'tunerBtn'; btn.textContent = '⚙'; btn.title = '數值面板 ( ` )';
+    btn.addEventListener('click', () => toggleTuner()); document.body.appendChild(btn);
+
+    const panel = document.createElement('div'); panel.id = 'tuner';
+    const head = document.createElement('header');
+    const ttl = document.createElement('b'); ttl.textContent = '數值平衡';
+    const x = document.createElement('button'); x.textContent = '✕'; x.addEventListener('click', () => toggleTuner(false));
+    head.appendChild(ttl); head.appendChild(x); panel.appendChild(head);
+
+    const tabs = document.createElement('div'); tabs.className = 'tabs';
+    TUNE_TABS.forEach(t => {
+      const b = document.createElement('div'); b.className = 'tab' + (t.key === tunerTab ? ' on' : ''); b.textContent = t.label; b.dataset.k = t.key;
+      b.addEventListener('click', () => { tunerTab = t.key; for (const c of tabs.children) c.className = 'tab' + (c.dataset.k === tunerTab ? ' on' : ''); buildTunerBody(); });
+      tabs.appendChild(b);
+    });
+    panel.appendChild(tabs);
+
+    const search = document.createElement('input'); search.className = 'search'; search.placeholder = '搜尋… (例: flank / damage / hp / scope)';
+    search.addEventListener('input', () => { tunerSearch = search.value; applyTunerFilter(); }); panel.appendChild(search);
+
+    tunerBody = document.createElement('div'); tunerBody.className = 'body'; panel.appendChild(tunerBody);
+
+    const ta = document.createElement('textarea'); ta.readOnly = true;
+    const foot = document.createElement('footer');
+    const exp = document.createElement('button'); exp.textContent = '輸出覆寫';
+    const rst = document.createElement('button'); rst.textContent = '全部重設';
+    exp.addEventListener('click', () => { ta.style.display = 'block'; ta.value = tunerExportText(); if (ta.select) ta.select(); });
+    rst.addEventListener('click', () => { tunerReset(); ta.style.display = 'none'; });
+    foot.appendChild(exp); foot.appendChild(rst); panel.appendChild(foot);
+
+    const note = document.createElement('div'); note.className = 'note';
+    note.textContent = '即時生效：CONFIG/武器數值多為即時；彈夾大小、unitHp、敵人 hp/armor 於下次生成或換彈套用。變更自動存於本機，重整保留。';
+    panel.appendChild(note); panel.appendChild(ta);
+
+    document.body.appendChild(panel); tunerEl = panel;
+  } catch (e) { tunerEl = null; }
+}
+initTunerUI();
 
 /* =====================================================================
    Main loop
