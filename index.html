@@ -69,6 +69,9 @@ const CONFIG = {
   // 重裝敵人裝甲：高機率「整發擋下」非穿甲攻擊；穿甲(pierce)越高越能無視。
   // 有效擋格率 = blockChance × (1 − weapon.pierce)。血量與一般敵人相同，靠這條形成質差。
   armor: { blockChance: 0.85 },
+  // 側翼/突襲（敵我皆適用）：依攻擊來向 vs 目標視野錐。flank＝錐外(側後)＝×flankMult 且無視所有裝甲；
+  // surprise＝閒置敵人正面＝×surpriseMult（僅對敵）；兩者皆中取較高、不相乘。
+  flank: { flankMult: 2.0, surpriseMult: 1.5 },
 
   // --- 額外佔位 ---
   unitRadius: 12,
@@ -926,14 +929,20 @@ function enemyAttack(e, ang, dt) {
 // 待機開火：基礎較差(spreadBase/精度倍率)＋連射 bloom；射速 ×idleFireRateMult。TAP 靠停頓讓 bloom 回復、AUTO 把 bloom 拉滿。
 const idleEngageFire = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase / CONFIG.idleAccuracyMult + u.bloom, CONFIG.idleFireRateMult, u.weapon.spreadPerShot);
 
-function damageUnit(u, dmg, pierce = 0) {
+// fromAng＝攻擊來向（目標→發射原點的角度）。落在目標視野錐外＝flank（側後）。
+function damageUnit(u, dmg, pierce = 0, fromAng = null) {
+  const coneHalf = (u.coneHalfDeg || CONFIG.vision.coneHalfDeg) * Math.PI / 180;
+  const flanked = (fromAng != null) && Math.abs(angDiff(fromAng, u.facing)) > coneHalf;   // 錐外＝繞背
+  const surprise = (u.faction === 'enemy' && u.state === 'IDLE');                          // 閒置敵人被突襲（僅對敵）
+  const mult = flanked ? CONFIG.flank.flankMult : (surprise ? CONFIG.flank.surpriseMult : 1);  // 取較高、不相乘
   if (u.faction === 'enemy') {
     u.state = 'ENGAGED';   // 被攻擊（即使被甲擋下）也進入交戰（latch）
-    if (u.armor > 0 && Math.random() < u.armor * (1 - pierce)) { spawnBlock(u.pos); return; }   // 裝甲：整發擋下非穿甲
+    if (!flanked && u.armor > 0 && Math.random() < u.armor * (1 - pierce)) { spawnBlock(u.pos); return; }   // 裝甲：整發擋下非穿甲（繞背無視）
   }
-  u.hp -= dmg * (1 - (u.dmgResist || 0));   // 裝備(護甲/重甲)減傷
+  const resist = flanked ? 0 : (u.dmgResist || 0);   // 繞背無視所有裝甲（含玩家固定減傷＝甲只罩正面）
+  u.hp -= dmg * mult * (1 - resist);
   if (u.faction === 'player') u.alertTimer = CONFIG.ghostAlertTime;
-  spawnHit(u.pos);
+  if (flanked || surprise) spawnCrit(u.pos); else spawnHit(u.pos);   // 繞背/突襲命中＝不同火花
   if (u.hp <= 0) killUnit(u);
 }
 function killUnit(u) {
@@ -1013,7 +1022,7 @@ function updateBullets(dt) {
     }
     if (!gone) {
       const targets = b.faction === 'player' ? enemies.filter(e => !e.dead) : activePlayers();
-      for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) { damageUnit(t, b.dmg, b.pierce || 0); gone = true; break; }
+      for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) { damageUnit(t, b.dmg, b.pierce || 0, angTo(t.pos, { x: b.ox, y: b.oy })); gone = true; break; }
     }
     if (gone) bullets.splice(i, 1);
   }
@@ -1225,6 +1234,7 @@ function separate(units) {
    ===================================================================== */
 function spawnHit(p) { for (let i = 0; i < 4; i++) particles.push(mkPart(p, 90, 0.25, '#ffd27d')); }
 function spawnBlock(p) { for (let i = 0; i < 6; i++) particles.push(mkPart(p, 130, 0.28, '#bcd2ff')); }   // 裝甲彈開「鏘」的火花
+function spawnCrit(p) { for (let i = 0; i < 9; i++) particles.push(mkPart(p, 170, 0.4, '#ff5a6e')); }     // 繞背/突襲＝紅色重擊火花
 function spawnDeath(p) { for (let i = 0; i < 14; i++) particles.push(mkPart(p, 180, 0.5, '#ff6b6b')); }
 function spawnHeal(p) { for (let i = 0; i < 12; i++) particles.push(mkPart(p, 70, 0.55, '#7fffa8')); }
 function spawnPickup(p) { for (let i = 0; i < 10; i++) particles.push(mkPart(p, 90, 0.5, '#ffe08a')); }

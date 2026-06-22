@@ -9,6 +9,7 @@
 ## 速記
 - 所有可調數值/內容在 `index.html` 檔頂：`CONFIG` / `WEAPONS` / `ABILITIES` / `EQUIPMENT` / `ITEMS` / `ARCHETYPES` / `ENEMY_TYPES`(敵人類型) / `MAPS`(多張戰鬥地圖) / `ROADMAP`。
 - 敵人＝資料驅動類型（`enemySpawns.type`，預設 grunt）：grunt/dog(警犬)/heavy_lmg/heavy_shot；重裝靠裝甲「機率整發擋下非穿甲」(武器 `pierce`)而非高血量。詳見 §4.16。
+- 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。
 - 場景：`MAP / COMBAT / REST / ARMORY / RUNEND / RUNWIN / EDITOR`（有遊戲內關卡編輯器）。
 - 完成的更新都 commit + push 到 GitHub `darkbearlab/sleeper_roguelite`（git 認證走系統 Git Credential Manager）。
 - 改完一定要驗證：抽出 `<script>` 丟 Node `vm`、stub 掉 DOM/canvas/pointerlock/**localStorage**，**逐幀跑遍所有場景的 `update()+draw()`**（不要只在戰鬥跑）。
