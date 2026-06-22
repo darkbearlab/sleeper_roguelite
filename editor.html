@@ -947,7 +947,7 @@ function init() {
   cv.addEventListener('mousedown', e => { onDown(Object.assign(sxsy(e), {})); });
   window.addEventListener('mousemove', e => { onMove(sxsy(e)); });
   window.addEventListener('mouseup', e => onUp(sxsy(e)));
-  cv.addEventListener('wheel', e => { e.preventDefault(); onWheel(sxsy(e)); }, { passive: false });
+  cv.addEventListener('wheel', e => { e.preventDefault(); const o = sxsy(e); o.deltaY = e.deltaY; onWheel(o); }, { passive: false });
   cv.addEventListener('contextmenu', e => { e.preventDefault(); onContext(s2w({ x: e.clientX - cv.getBoundingClientRect().left, y: e.clientY - cv.getBoundingClientRect().top })); });
   window.addEventListener('keydown', e => {
     const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
