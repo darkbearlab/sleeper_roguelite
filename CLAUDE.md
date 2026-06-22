@@ -7,7 +7,8 @@
 - `SLEEPER_開發計畫.md` — 原始設計規格。
 
 ## 速記
-- 所有可調數值/內容在 `index.html` 檔頂：`CONFIG` / `WEAPONS` / `ABILITIES` / `EQUIPMENT` / `ITEMS` / `ARCHETYPES` / `ENEMY_TYPES`(敵人類型) / `MAPS`(多張戰鬥地圖) / `ROADMAP`。
+- 所有可調數值/內容在 `index.html` 檔頂：`CONFIG` / `WEAPONS` / `ABILITIES` / `EQUIPMENT` / `ITEMS` / `ARCHETYPES` / `ENEMY_TYPES`(敵人類型) / `DESTRUCT`(可破壞地形形態) / `MAPS`(多張戰鬥地圖) / `ROADMAP`。
+- 地形：牆/門/低矮牆/草叢(MAP.bushes)/**可破壞地形(MAP.destructibles：wall/glass/lowwall/fence/flat 兩形態+HP)**；五型預設(木箱/落地窗/有矮牆窗/全遮蔽/鐵網)。改地形阻擋邏輯看 segBlocked/collideWalls/onLowWall/updateBullets/canSee。詳見 §4.20。
 - 敵人＝資料驅動類型（`enemySpawns.type`，預設 grunt）：grunt/dog(警犬)/heavy_lmg/heavy_shot；重裝靠裝甲「機率整發擋下非穿甲」(武器 `pierce`)而非高血量。詳見 §4.16。
 - 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。
 - 潛行/警覺層（§4.19，Stage 1-5 全做完）：IDLE 敵短錐+有限視距(`canSee` 依狀態)+識別空窗(`enemy.detect` 累滿才 ENGAGED，永鎖；槍聲/被擊中瞬交戰)+overwatch 對 IDLE 收火；草叢(`MAP.bushes`/`inConceal`，MOBA 遮蔽，`drawEnemies` 依 `isRevealed`)；消音手槍(`WEAPONS.silpistol` silent，亞音速彈稀少)；望遠(右鍵 `isScoping()`，鏡頭前帶+穩定+禁奔跑，技能移空白鍵)；前哨站 `MAPS.outpost`。`CONFIG.stealth`/`scope`。
