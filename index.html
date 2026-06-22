@@ -736,7 +736,9 @@ function startIntro() {
 }
 // 序章對白/演出腳本（節拍序列）。對白以「對話泡」呈現於說話者頭頂（pos 給世界座標、不顯姓名）。
 function introBeats(victim) {
-  const prot = () => players[0].pos, vic = () => victim.pos, guard = () => (introGuards[0] ? introGuards[0].pos : players[0].pos);
+  const prot = () => players[0].pos, vic = () => victim.pos;
+  const guard0 = () => (introGuards[0] ? introGuards[0].pos : players[0].pos);
+  const guard1 = () => (introGuards[1] ? introGuards[1].pos : players[0].pos);
   return [
     { kind: 'wait', dur: 0.6 },
     { kind: 'say', pos: vic, text: '時候…終於到了。那東西，終於完成了。' },
@@ -766,7 +768,8 @@ function introBeats(victim) {
       } },
     { kind: 'wait', dur: 0.6 },
     { kind: 'say', pos: prot, text: 'For our Father.' },
-    { kind: 'say', pos: guard, text: 'For our Father.' },
+    { kind: 'say', pos: guard0, text: 'For our Father.' },              // 兩名守衛依序回應
+    { kind: 'say', pos: guard1, text: 'For our Father.' },
     { kind: 'do', fn: () => guardsJoin() },                              // 守衛入隊（帶初始武器）
     { kind: 'cam', to: 'follow' },                                       // 交回跟隨（恢復一般迷霧）
     { kind: 'sub', text: '按 H 撤離　或 Shift+H 全員撤離' },
@@ -1674,6 +1677,9 @@ function draw() {
   if (scene === 'RUNEND') { drawRunEnd(); return; }
   if (scene === 'RUNWIN') { drawRunWin(); return; }
 
+  // 鎖定滑鼠前＝黑螢幕（不洩漏場面、不破壞氣氛；全關卡適用，含第0關）
+  if (!pointerLocked) { drawCombatStart(); return; }
+
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
   drawGrid(); drawLowWalls(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
@@ -1770,6 +1776,16 @@ function drawDialogueBoxLegacy(who, text) {
   ctx.textAlign = 'left';
   ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText(who || '', bx + 18, by + 28);
   ctx.fillStyle = '#e6edf3'; ctx.font = '16px Consolas'; ctx.fillText(text, bx + 18, by + 58);
+}
+// 鎖定滑鼠前的黑螢幕（取代「世界透出來」的暫停畫面，避免洩漏場面/破壞氣氛）
+function drawCombatStart() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 18px Consolas';
+  ctx.fillText('▶ 點擊畫面以開始', cv.width / 2, cv.height / 2 - 2);
+  ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '12px Consolas';
+  ctx.fillText('（滑鼠移動=轉向 · Esc=暫停）', cv.width / 2, cv.height / 2 + 22);
+  ctx.textAlign = 'left';
 }
 
 function drawGrid() {
@@ -2041,13 +2057,6 @@ function drawHUD() {
   ctx.textAlign = 'right'; ctx.font = '13px Consolas'; ctx.fillStyle = '#cdd6e0';
   ctx.fillText(`EXTRACTED ${extractedCount}   ON FIELD ${activePlayers().length}   DEAD ${deadCount}   ENEMIES ${enemies.filter(e => !e.dead).length}`, cv.width - 16, 22);
   if (drops.length || backpack.length) { ctx.fillStyle = '#ffe08a'; ctx.fillText(`BACKPACK ${backpack.length}${drops.length ? `   · 地上 ${drops.length} 件可撿` : ''}`, cv.width - 16, 40); }
-
-  // 滑鼠未鎖定＝戰鬥暫停中
-  if (!pointerLocked) {
-    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(cv.width / 2 - 210, cv.height / 2 - 24, 420, 48);
-    ctx.fillStyle = '#ffe08a'; ctx.font = 'bold 17px Consolas'; ctx.fillText('▶ 點擊畫面鎖定滑鼠以開始 / 繼續', cv.width / 2, cv.height / 2 - 2);
-    ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '12px Consolas'; ctx.fillText('（滑鼠移動=轉向 · Esc=暫停）', cv.width / 2, cv.height / 2 + 18);
-  }
 
   // 護送撤離提示（controlledId 指向 EXTRACTING 單位＝護送中）
   if (controlledId != null && players[controlledId] && players[controlledId].state === 'EXTRACTING') {
