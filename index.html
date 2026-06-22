@@ -484,14 +484,11 @@ function initCamera(f) {
 }
 function updateCamera(dt) {
   if (!cam) return;   // 安全防護：非戰鬥場景 cam 可能尚未建立
-  if (controlledId != null && players[controlledId].state === 'CONTROLLED') {
+  // 跟隨被附身單位：手動控制(CONTROLLED) 或 護送撤離中(EXTRACTING) 都跟（撤出/陣亡後 controlledId 會被清空，鏡頭定住）
+  if (controlledId != null && (players[controlledId].state === 'CONTROLLED' || players[controlledId].state === 'EXTRACTING')) {
     const f = players[controlledId];
     camTarget.x = f.pos.x; camTarget.y = f.pos.y;
     camTarget.angle = -Math.PI / 2 - f.facing;   // facing → 螢幕上方
-  } else if (followExtractId != null) {
-    const u = players[followExtractId];
-    if (u && u.state === 'EXTRACTING') { camTarget.x = u.pos.x; camTarget.y = u.pos.y; camTarget.angle = -Math.PI / 2 - u.facing; } // 續跟位置與移動朝向
-    else followExtractId = null;                  // 已撤出/陣亡 → 結束跟隨，鏡頭定住
   }
   const kp = 1 - Math.exp(-CONFIG.camera.followLerp * dt);
   const ka = 1 - Math.exp(-CONFIG.camera.rotateLerp * dt);
@@ -535,7 +532,7 @@ let roadCompleted, roadAvailable, roadCurrent;  // 路線圖狀態
 let hysteresisOn = true, debugView = false, lastSwitchT;
 let aimDir = 0;              // 砲塔目標朝向（世界角，由滑鼠位移累積）
 let pointerLocked = false;  // 是否已鎖定滑鼠（FPS 式瞄準）
-let followExtractId = null;  // 按 F 撤離後，鏡頭續跟的撤離單位（直到按下任一非換人鍵）
+// 撤離護送＝controlledId 指向 EXTRACTING 單位（取代舊的鏡頭跟隨變數）：自走+滑鼠轉視野，任一指令奪回
 
 function makePlayer(i, cfg, pos) {
   const W = WEAPONS[cfg.weaponId];
@@ -642,7 +639,7 @@ function startMission() {
   // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
   for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }
   simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
-  extractedCount = 0; deadCount = 0; result = null; followExtractId = null;
+  extractedCount = 0; deadCount = 0; result = null;
   scene = 'COMBAT';
   aimDir = players[controlledId].facing;
   initCamera(players[controlledId]);
@@ -798,23 +795,49 @@ function possess(i) {
     const c = players[controlledId];
     if (c.state === 'CONTROLLED') { c.idleAnchor = c.facing; c.state = 'IDLE'; }  // 記住交回待機時的正前方
   }
-  u.state = 'CONTROLLED'; u.extractNode = null; controlledId = i;
-  u.facing = u.idleAnchor;  // 接手時正面恢復到該單位「進入閒置時的正前方」
-  aimDir = u.idleAnchor;
-  followExtractId = null;   // 接管控制權即結束「跟隨撤離」
+  controlledId = i;
+  if (u.state === 'EXTRACTING') {
+    aimDir = u.facing;        // 護送：保持撤離自走、滑鼠可轉視野，任一指令才奪回（不中斷撤離）
+  } else {
+    u.state = 'CONTROLLED'; u.extractNode = null;
+    u.facing = u.idleAnchor;  // 接手時正面恢復到該單位「進入閒置時的正前方」
+    aimDir = u.idleAnchor;
+  }
 }
-function toggleExtract() {
+// 護送中（controlledId 指向 EXTRACTING 單位）收到任一指令 → 奪回手動、撤離中斷
+function seizeIfEscorting() {
+  if (controlledId == null) return false;
+  const u = players[controlledId];
+  if (!u || u.state !== 'EXTRACTING') return false;
+  u.state = 'CONTROLLED'; u.extractNode = null;
+  return true;
+}
+function toggleExtract() {   // H：當前單位撤離↔取消（撤離後留在 controlledId＝進入護送）
   if (controlledId == null) return;
   const u = players[controlledId];
   if (u.state === 'CONTROLLED') {
     u.idleAnchor = u.facing;  // 撤離途中的 overwatch 也以當前正前方為錨
     u.state = 'EXTRACTING'; u.extractNode = null;
-    controlledId = null;
-    followExtractId = u.id;   // 釋放控制，但鏡頭續跟這名撤離單位（直到按下非換人鍵）
+    aimDir = u.facing;
+  } else if (u.state === 'EXTRACTING') {
+    u.state = 'CONTROLLED'; u.extractNode = null;   // 護送中再按 H → 取消撤離回手動
   }
 }
+function extractAll() {   // Shift+H：全體撤離（CONTROLLED/IDLE 全轉 EXTRACTING），挑一名護送
+  let escortId = controlledId;
+  for (const p of players) {
+    if (p.state === 'CONTROLLED' || p.state === 'IDLE') { p.idleAnchor = p.facing; p.state = 'EXTRACTING'; p.extractNode = null; }
+  }
+  if (escortId == null || !players[escortId] || players[escortId].state !== 'EXTRACTING') {
+    let best = -1, bd = Infinity;   // 沒有現成控制對象 → 護送最靠近撤離點者
+    for (const p of players) { if (p.state !== 'EXTRACTING') continue; const d = dist(p.pos, EXTRACT); if (d < bd) { bd = d; best = p.id; } }
+    escortId = best;
+  }
+  controlledId = (escortId >= 0) ? escortId : null;
+  if (controlledId != null) aimDir = players[controlledId].facing;
+}
 function autoPossess(fromPos) {
-  // 非撤離(IDLE)單位優先，沒有才退而附身撤離中(EXTRACTING)單位（會把它抓回手動控制）
+  // 非撤離(IDLE)單位優先，沒有才退而附身撤離中(EXTRACTING)單位（possess 會自動進入護送、不中斷撤離）
   const pick = (state) => {
     let best = -1, bd = Infinity;
     for (const p of players) { if (p.state !== state) continue; const d = fromPos ? dist(p.pos, fromPos) : p.id; if (d < bd) { bd = d; best = p.id; } }
@@ -1155,9 +1178,11 @@ function extractTick(u, dt) {
     const nx = nextHop[u.extractNode]; if (nx != null) u.extractNode = nx;
   }
   const goal = (u.extractNode === extractNodeId) ? EXTRACT : wp(u.extractNode).pos;
-  u.facing = rotToward(u.facing, angTo(u.pos, goal), (u.turnSpeed || u.weapon.turnSpeed) * Math.PI / 180 * dt);  // 面向移動方向
+  const turn = (u.turnSpeed || u.weapon.turnSpeed) * Math.PI / 180 * dt;
+  if (u.id === controlledId) u.facing = rotToward(u.facing, aimDir, turn);            // 護送：滑鼠自由轉視野（不中斷撤離）
+  else u.facing = rotToward(u.facing, angTo(u.pos, goal), turn);                      // 自走：面向移動方向
   moveToward(u, goal, CONFIG.moveSpeed * lowWallSpeedMult(u.pos) * (u.moveMul || 1) * dt);   // 低矮牆減速 + 裝備
-  idleTick(u, dt, true);   // 保留待機開火，但不改朝向（沿用移動朝向）
+  idleTick(u, dt, true);   // 保留待機開火，但不改朝向（朝向已由上方決定）
 }
 
 /* =====================================================================
@@ -1249,8 +1274,8 @@ cv.addEventListener('mousemove', e => {
 cv.addEventListener('mousedown', e => {
   if (scene === 'EDITOR') { if (e.button === 2) editorEraseAt(snapPt({ x: mouse.mx, y: mouse.my })); else editorMouseDown(); return; }
   if (scene !== 'COMBAT' || !pointerLocked) return;
-  if (e.button === 0) mouse.down = true;                                  // 左鍵開火
-  else if (e.button === 2 && controlledId != null) useAbility(players[controlledId]); // 右鍵放技能
+  if (e.button === 0) { seizeIfEscorting(); mouse.down = true; }          // 左鍵開火（護送中→立刻奪回、同幀開火）
+  else if (e.button === 2) { seizeIfEscorting(); if (controlledId != null) useAbility(players[controlledId]); } // 右鍵放技能（護送中→奪回）
 });
 window.addEventListener('mouseup', e => { if (scene === 'EDITOR' && e.button === 0) { editorMouseUp(); return; } if (e.button === 0) mouse.down = false; });
 
@@ -1306,19 +1331,18 @@ window.addEventListener('keydown', e => {
 
   // --- COMBAT ---
   if (fromEditor && k === 'backspace') { fromEditor = false; forcedMap = null; scene = 'EDITOR'; releasePointer(); editMsg = '已中止試玩，回到編輯器'; e.preventDefault(); return; }
-  if (followExtractId != null && !(k >= '1' && k <= '9')) followExtractId = null;  // 非換人鍵 → 結束跟隨撤離
   if (k >= '1' && k <= '9') {
     const i = parseInt(k, 10) - 1;
     const handover = CONFIG.switchHandoverMs / 1000;
-    if (i < players.length && i !== controlledId && (simTime - lastSwitchT) >= handover) { possess(i); lastSwitchT = simTime; }
+    if (i < players.length && i !== controlledId && (simTime - lastSwitchT) >= handover) { possess(i); lastSwitchT = simTime; }  // 切到撤離中單位＝護送(不中斷)
   }
-  if (k === 'f') toggleExtract();
-  if (k === ' ') { if (controlledId != null) useAbility(players[controlledId]); }       // 空白鍵=技能（右鍵亦可）
-  if (k === 'r') { if (controlledId != null) startReload(players[controlledId]); }       // 換彈
-  if (k === 'q') { if (controlledId != null) useItem(players[controlledId]); }           // 道具（一次性）
-  if (k === 'e') tryInteract();                                                          // 互動：開關門/按鈕
+  if (k === 'h') { if (e.shiftKey) extractAll(); else toggleExtract(); }                  // H 撤離(進入護送) / Shift+H 全體撤離
+  if (k === ' ') { seizeIfEscorting(); if (controlledId != null) useAbility(players[controlledId]); }  // 空白鍵=技能（右鍵亦可）；護送中→奪回
+  if (k === 'r') { seizeIfEscorting(); if (controlledId != null) startReload(players[controlledId]); } // 換彈；護送中→奪回
+  if (k === 'q') { seizeIfEscorting(); if (controlledId != null) useItem(players[controlledId]); }     // 道具；護送中→奪回
+  if (k === 'e') { seizeIfEscorting(); tryInteract(); }                                                // 互動：開關門/按鈕；護送中→奪回
   if (k === 'g') debugView = !debugView;
-  if (k === 'h') hysteresisOn = !hysteresisOn;
+  if (k === 'j') hysteresisOn = !hysteresisOn;   // (debug) 原 H，因 H 改作撤離而移位
   if ([' ', 'w', 'a', 's', 'd'].includes(k)) e.preventDefault();
 });
 window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
@@ -1333,6 +1357,12 @@ function update(dt) {
 
   for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
   for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; tickAmmo(e, dt); }
+
+  // 0) 護送 seize：護送(controlledId 指向 EXTRACTING)時，移動或開火 → 奪回手動、撤離中斷（滑鼠轉視野不算）
+  if (controlledId != null && players[controlledId].state === 'EXTRACTING') {
+    const moveCmd = keys.has('w') || keys.has('a') || keys.has('s') || keys.has('d');
+    if (moveCmd || mouse.down) seizeIfEscorting();
+  }
 
   // 1) 被附身單位：滑鼠轉向(turnSpeed) + 相對角色移動 + 左鍵開火
   if (controlledId != null) {
@@ -1394,7 +1424,7 @@ function update(dt) {
   }
 
   // 7.5) 戰鬥中若沒被附身、又非刻意跟隨撤離中 → 自動接手場上其他單位（非撤離優先），不留空轉
-  if (controlledId == null && followExtractId == null && activePlayers().length > 0) autoPossess(null);
+  if (controlledId == null && activePlayers().length > 0) autoPossess(null);
 
   // 8) 計時 + 結算（場上無我方 → 進休息關 或 run 結束）
   simTime += dt;
@@ -1705,9 +1735,17 @@ function drawHUD() {
     ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '12px Consolas'; ctx.fillText('（滑鼠移動=轉向 · Esc=暫停）', cv.width / 2, cv.height / 2 + 18);
   }
 
+  // 護送撤離提示（controlledId 指向 EXTRACTING 單位＝護送中）
+  if (controlledId != null && players[controlledId] && players[controlledId].state === 'EXTRACTING') {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(95,208,107,0.16)'; ctx.fillRect(cv.width / 2 - 200, 14, 400, 30);
+    ctx.fillStyle = '#7fffa8'; ctx.font = 'bold 14px Consolas';
+    ctx.fillText('⟳ 護送撤離中 — 滑鼠轉視野 · 移動/開火/技能=奪回控制', cv.width / 2, 34);
+  }
+
   // 控制提示（卡片帶上方）
   ctx.textAlign = 'center'; ctx.font = '11px Consolas'; ctx.fillStyle = 'rgba(205,214,224,0.55)';
-  ctx.fillText('滑鼠=轉向 · 左鍵開火 · 右鍵/空白=技能 · WASD 移動 · Shift 奔跑 · R 換彈 · E 互動(開關門/按鈕) · 1/2/3 附身 · F 撤離 · 走過掉落物=撿', cv.width / 2, cv.height - 94);
+  ctx.fillText('滑鼠=轉向 · 左鍵開火 · 右鍵/空白=技能 · WASD 移動 · Shift 奔跑 · R 換彈 · E 互動 · 1/2/3 附身 · H 撤離(護送) · Shift+H 全體撤離 · 走過掉落物=撿', cv.width / 2, cv.height - 94);
   if (debugView || !hysteresisOn) {
     ctx.fillStyle = hysteresisOn ? '#7fe3ff' : '#ff9b5a';
     ctx.fillText(`hysteresis: ${hysteresisOn ? 'ON' : 'OFF (觀察抖動)'}    debug(無迷霧): ${debugView ? 'ON' : 'OFF'}`, cv.width / 2, cv.height - 108);
