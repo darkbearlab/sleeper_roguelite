@@ -408,6 +408,38 @@ const MAPS = {
     ],
     prisoners: [{ x: 980, y: 480 }],           // 右區門後的俘虜（救出並撤離→入隊）
   },
+  // intro：第0關（序章/教學）。管制室(左) → 控制台 → 出口門(x900) → 守衛廊道 → 撤離(右)。
+  // 主角/同僚/守衛由 startIntro 以腳本放置，非 enemySpawns；timeBudget 由 startIntro 設超大（無追兵）。
+  intro: {
+    label: '管制室',
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 },
+      { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 },
+      { x1: 40, y1: 680, x2: 40, y2: 40 },
+      { x1: 900, y1: 40, x2: 900, y2: 200 },     // 隔牆上（缺口 y200~300＝exit 門）
+      { x1: 900, y1: 300, x2: 900, y2: 680 },    // 隔牆下
+    ],
+    doors: [
+      { id: 'exit', x1: 900, y1: 200, x2: 900, y2: 300, open: false },   // 出口門（E 開）
+    ],
+    lowWalls: [
+      { x1: 260, y1: 296, x2: 460, y2: 296 },    // 管制室「窗台/欄杆」（純裝飾，看著下方）
+    ],
+    buttons: [],
+    waypoints: [
+      { id: 0, pos: { x: 300,  y: 240 }, tags: ['patrol', 'spawn'] },   // 管制室
+      { id: 1, pos: { x: 700,  y: 240 }, tags: ['patrol'] },            // 控制台
+      { id: 2, pos: { x: 850,  y: 240 }, tags: ['choke'] },             // 門前
+      { id: 3, pos: { x: 980,  y: 240 }, tags: ['patrol'] },            // 門後廊道（守衛）
+      { id: 4, pos: { x: 1180, y: 240 }, tags: ['patrol'] },            // 撤離
+    ],
+    edges: [[0, 1], [1, 2], [2, 3], [3, 4]],
+    entryPoints: [{ x: 300, y: 240 }],
+    extractionPoints: [{ x: 1190, y: 240 }],
+    enemySpawns: [],
+    prisoners: [],
+  },
 };
 
 let MAP = MAPS.alpha;        // 目前作用中的戰鬥地圖（startMission 依節點切換）
@@ -487,8 +519,10 @@ function initCamera(f) {
 }
 function updateCamera(dt) {
   if (!cam) return;   // 安全防護：非戰鬥場景 cam 可能尚未建立
+  // 演出固定機位（cutscene.cam 非 null）：俯視框住場面，不跟單位
+  if (cutscene && cutscene.cam) { camTarget.x = cutscene.cam.x; camTarget.y = cutscene.cam.y; camTarget.angle = cutscene.cam.angle; }
   // 跟隨被附身單位：手動控制(CONTROLLED) 或 護送撤離中(EXTRACTING) 都跟（撤出/陣亡後 controlledId 會被清空，鏡頭定住）
-  if (controlledId != null && (players[controlledId].state === 'CONTROLLED' || players[controlledId].state === 'EXTRACTING')) {
+  else if (controlledId != null && (players[controlledId].state === 'CONTROLLED' || players[controlledId].state === 'EXTRACTING')) {
     const f = players[controlledId];
     camTarget.x = f.pos.x; camTarget.y = f.pos.y;
     camTarget.angle = -Math.PI / 2 - f.facing;   // facing → 螢幕上方
@@ -535,6 +569,13 @@ let roadCompleted, roadAvailable, roadCurrent;  // 路線圖狀態
 let hysteresisOn = true, debugView = false, lastSwitchT;
 let aimDir = 0;              // 砲塔目標朝向（世界角，由滑鼠位移累積）
 let pointerLocked = false;  // 是否已鎖定滑鼠（FPS 式瞄準）
+// 第0關（序章/教學）：cutscene 導演 + 演出用 actor/標記。詳見 startIntro / cutsceneTick。
+let cutscene = null;         // 演出導演物件（null＝無）：{ beats,i,line,subtitle,lock,gate,cam,victim,flags,advance }
+let introActive = false;     // 序章進行中（影響 endMission 路由、Esc 跳過）
+let introCast = null;        // 序章三人陣容 configs（主角+2守衛；跳過/演完都用它當 roster）
+let introGuards = [];        // 演出中的守衛 actor [{pos,facing,hue,name}]（密語後轉真單位）
+let introConsole = null;     // 控制台互動點 {x,y,used}（取得發射密碼）
+let restTutorial = false;    // REST 是否顯示教學說明面板（僅序章休息）
 // 撤離護送＝controlledId 指向 EXTRACTING 單位（取代舊的鏡頭跟隨變數）：自走+滑鼠轉視野，任一指令奪回
 
 function makePlayer(i, cfg, pos) {
@@ -599,12 +640,13 @@ function releasePointer() { if (document.exitPointerLock) document.exitPointerLo
 
 // 開新的一輪 run（從基礎陣容起，先進路線圖）
 function initRun() {
-  roster = baseRoster(); missionIndex = 0;
+  roster = baseRoster(); missionIndex = 0;   // baseRoster 僅後備；序章會以三人陣容取代
   warehouse = []; backpack = []; drops = [];
   ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = CONFIG.ammo.stockStart;  // 共用彈藥儲備（寬裕）
   restSel = null;
   roadCompleted = new Set(); roadCurrent = null; roadAvailable = ROADMAP.start.slice();
-  result = null; lastSummary = null; scene = 'MAP';
+  result = null; lastSummary = null;
+  startIntro();   // 第0關（序章/教學）：每局都播、可 Esc 跳過 → 之後進序章休息 → 路線圖
 }
 
 // 在路線圖選擇一個可前往的節點
@@ -651,10 +693,160 @@ function startMission() {
 // 戰鬥結算：撤出者帶入後續（→回路線圖）；0 撤出則 run 結束
 function endMission() {
   if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
+  if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
   const survivors = players.filter(p => p.state === 'EXTRACTED');
   lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name) };
   if (survivors.length >= 1) { roster = survivors.map(rosterFromPlayer); missionIndex++; advanceNode(); }
   else { scene = 'RUNEND'; result = 'LOSE'; releasePointer(); }
+}
+
+/* =====================================================================
+   第0關（序章 / 教學）：cutscene 導演 + 演出 actor。流程見對話腳本 introBeats。
+   每局 initRun 都進；Esc 可只跳過演出（休息關仍進、選行動，只是不顯示教學面板）。
+   陣容＝主角(pistol)+2守衛(RECRUIT槍)＝introCast；撤離後成為正式 run 的 roster。
+   ===================================================================== */
+function makeIntroCast() {
+  const used = new Set();
+  const prot = makeRecruit(used); prot.weaponId = FLOOR_WEAPON;                 // 主角：側槍(底線)
+  const g1 = makeRecruit(used); g1.weaponId = rngPick(RECRUIT_WEAPON_IDS);      // 守衛：帶初始武器
+  const g2 = makeRecruit(used); g2.weaponId = rngPick(RECRUIT_WEAPON_IDS);
+  return [prot, g1, g2];
+}
+function startIntro() {
+  introActive = true; restTutorial = false;
+  introCast = makeIntroCast();
+  buildMapDerived('intro');
+  for (const d of MAP.doors) d.open = false;
+  reservations = new Map(); enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = [];
+  // 主角＝players[0]（管制室，看著下方）；演出期由腳本移動，鏡頭固定，控制鎖住
+  players = [makePlayer(0, introCast[0], { x: 390, y: 240 })];
+  players[0].facing = Math.PI / 2; players[0].state = 'CONTROLLED'; controlledId = 0;
+  // 同僚＝enemy 單位（讓玩家子彈打得到；IDLE 不交戰；被貼背＝繞背爆擊）
+  const victim = makeEnemy(0, 'rusher', false, Math.PI / 2, 'grunt');
+  victim.pos = { x: 320, y: 240 }; victim.facing = Math.PI / 2; victim.hp = victim.maxHp = 30;
+  enemies = [victim];
+  introGuards = []; introConsole = null;
+  curTimeBudget = 1e9;   // 序章不要追兵打斷敘事
+  simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
+  extractedCount = 0; deadCount = 0; result = null;
+  scene = 'COMBAT'; aimDir = players[0].facing;
+  initCamera(players[0]);
+  cutscene = { beats: introBeats(victim), i: 0, line: null, subtitle: '', lock: true, gate: null,
+               cam: { x: 520, y: 300, angle: 0 }, victim, flags: {}, advance: false };
+}
+// 序章對白/演出腳本（節拍序列）。actor 參照：players[0]＝主角、victim＝同僚。
+function introBeats(victim) {
+  const prot = () => players[0];
+  return [
+    { kind: 'wait', dur: 0.6 },
+    { kind: 'say', who: '同僚', text: '時候…終於到了。那東西，終於完成了。' },
+    { kind: 'say', who: '主角', text: '是啊。父親會以我們為傲。' },
+    { kind: 'say', who: '同僚', text: '再過不久，世界就會聽見父親的聲音。' },
+    { kind: 'say', who: '主角', text: '我去趟洗手間。' },
+    { kind: 'say', who: '同僚', text: '去吧。' },
+    { kind: 'move', actor: prot, to: { x: 470, y: 70 }, speed: 150 },   // 往上離開畫面
+    { kind: 'wait', dur: 0.7 },
+    { kind: 'move', actor: prot, to: { x: 320, y: 170 }, speed: 120 },  // 回來、停在同僚正後方
+    { kind: 'face', actor: prot, to: { x: 320, y: 240 } },
+    { kind: 'wait', dur: 0.4 },
+    { kind: 'shoot', text: '按下左鍵攻擊' },                            // 等待左鍵 → 處決同僚
+    { kind: 'wait', dur: 0.5 },
+    { kind: 'cam', to: 'follow' },                                       // 交接：鏡頭轉為跟隨主角
+    { kind: 'sub', text: '取得發射密碼（走到控制台按 E）' },
+    { kind: 'do', fn: () => { introConsole = { x: 700, y: 240, used: false }; } },
+    { kind: 'gate', on: 'codes' },
+    { kind: 'sub', text: '前往出口、按 E 開門' },
+    { kind: 'gate', on: 'door' },
+    { kind: 'sub', text: '' },
+    { kind: 'do', fn: () => {   // 開門後：兩名守衛現身
+        introGuards = [ { pos: { x: 1000, y: 215 }, facing: Math.PI, hue: 0, name: '守衛' },
+                        { pos: { x: 1000, y: 265 }, facing: Math.PI, hue: 0, name: '守衛' } ];
+      } },
+    { kind: 'wait', dur: 0.5 },
+    { kind: 'say', who: '主角', text: 'For our Father.' },
+    { kind: 'say', who: '守衛', text: 'For our Father.' },
+    { kind: 'do', fn: () => guardsJoin() },                              // 守衛入隊（帶初始武器）
+    { kind: 'sub', text: '按 H 撤離　或 Shift+H 全員撤離' },
+    { kind: 'gate', on: 'extract' },                                     // 永不自完成；由 endMission 收尾
+  ];
+}
+// 守衛入隊：比照解放俘虜，但帶 RECRUIT 初始武器（用 introCast[1]/[2] 以對齊最終 roster）
+function guardsJoin() {
+  introGuards.forEach((g, k) => {
+    const u = makePlayer(players.length, introCast[k + 1], { x: g.pos.x, y: g.pos.y });
+    u.facing = g.facing; u.state = 'IDLE'; u.idleAnchor = u.facing;
+    players.push(u); spawnHeal(g.pos);
+  });
+  introGuards = [];   // 轉為真單位後不再以 actor 繪製
+}
+function gateSatisfied(g) {
+  if (g === 'fire') return cutscene.victim && cutscene.victim.dead;
+  if (g === 'codes') return introConsole && introConsole.used;
+  if (g === 'door') { const d = MAP.doors.find(x => x.id === 'exit'); return d && d.open; }
+  return false;   // 'extract'：由 endMission（場上無我方）收尾
+}
+function cutsceneTick(dt) {
+  const cs = cutscene; if (!cs) return;
+  let guard = 0;
+  while (cs.beats[cs.i] && guard++ < 50) {
+    const b = cs.beats[cs.i];
+    if (!b._entered) { b._entered = true; b._t = 0; beatEnter(cs, b); }
+    const instant = (b.kind === 'sub' || b.kind === 'cam' || b.kind === 'do' || b.kind === 'face');
+    if (!instant) b._t += dt;
+    if (beatDone(cs, b, dt)) { cs.i++; continue; }   // 完成 → 下一拍（同幀續處理 instant）
+    break;                                            // 仍進行 → 等下一幀
+  }
+}
+function beatEnter(cs, b) {
+  if (b.kind === 'say') { cs.line = { who: b.who, text: b.text }; cs.lock = true; cs.advance = false; }
+  else if (b.kind === 'sub') cs.subtitle = b.text;
+  else if (b.kind === 'cam') cs.cam = (b.to === 'follow') ? null : b.to;
+  else if (b.kind === 'do') { if (b.fn) b.fn(); }
+  else if (b.kind === 'face') { const a = b.actor(); a.facing = b.angle != null ? b.angle : angTo(a.pos, b.to); }
+  else if (b.kind === 'move') { cs.lock = true; }
+  else if (b.kind === 'wait') { cs.lock = true; }
+  else if (b.kind === 'shoot') { cs.lock = true; cs.line = null; cs.subtitle = b.text || '按下左鍵攻擊'; }
+  else if (b.kind === 'gate') { cs.lock = false; cs.gate = b.on; cs.line = null; if (b.text != null) cs.subtitle = b.text; }
+}
+function beatDone(cs, b, dt) {
+  switch (b.kind) {
+    case 'sub': case 'cam': case 'do': case 'face': return true;   // instant
+    case 'wait': return b._t >= b.dur;
+    case 'say': if (cs.advance && b._t > 0.2) { cs.advance = false; cs.line = null; return true; } return false;
+    case 'move': {
+      const a = b.actor(); const sp = (b.speed || CONFIG.moveSpeed) * dt;
+      moveToward(a, b.to, sp);
+      a.facing = rotToward(a.facing, angTo(a.pos, b.to), (a.turnSpeed || 360) * Math.PI / 180 * dt);
+      return dist(a.pos, b.to) < 4;
+    }
+    case 'shoot': {
+      if (mouse.down && !b._fired) {   // 左鍵 → 處決同僚（貼背＝繞背爆擊；999 確保斃）
+        b._fired = true;
+        const p = players[0], v = cs.victim;
+        p.facing = angTo(p.pos, v.pos); p.muzzle = 0.05; spawnMuzzleBullet(p, v);
+        damageUnit(v, 999, 1, angTo(v.pos, p.pos));
+      }
+      return cs.victim.dead;
+    }
+    case 'gate': return gateSatisfied(b.on);
+    default: return true;
+  }
+}
+// 處決用的視覺子彈（一發、貼臉，僅做演出火花；傷害已由 damageUnit 直接結算）
+function spawnMuzzleBullet(p, v) { spawnHit(v.pos); for (let i = 0; i < 3; i++) particles.push(mkPart(p.pos, 60, 0.15, '#ffe08a')); }
+// 結束序章 → 序章休息（含教學）。陣容＝撤出者（與 introCast 一致），失敗保底用 introCast。
+function finishIntro() {
+  const survivors = players.filter(p => p.state === 'EXTRACTED');
+  roster = survivors.length ? survivors.map(rosterFromPlayer) : introCast.slice();
+  introActive = false; cutscene = null; introGuards = []; introConsole = null;
+  missionIndex = 0;
+  enterRest(true);   // 序章休息：顯示教學面板
+}
+// Esc：只跳過演出。陣容直接用 introCast，照樣進序章休息（不顯示教學面板）。
+function skipIntro() {
+  introActive = false; cutscene = null; introGuards = []; introConsole = null;
+  roster = introCast.slice(); missionIndex = 0;
+  enterRest(false);
 }
 
 /* =====================================================================
@@ -688,8 +880,9 @@ function armoryPick(i) {
 }
 
 // --- 進入休息關：整理臨時背包（彈藥折算進儲備、item 進倉庫 haul）---
-function enterRest() {
+function enterRest(tutorial = false) {
   scene = 'REST'; releasePointer();
+  restTutorial = tutorial;   // 序章休息＝顯示教學說明面板
   restPhase = 'CHOICE'; restOffers = null; restPick = null; restPendingUpgrade = null; restSel = null; restMsg = '';
   for (const it of backpack) {
     if (it.kind === 'weapon') { if (!isInfiniteAmmo(it.id)) ammoStock[it.id] = (ammoStock[it.id] || 0) + (it.ammo || 0); warehouse.push({ kind: 'weapon', id: it.id }); }
@@ -750,7 +943,12 @@ function autoEquipFromWarehouse(rec) {
   if (bestIdx >= 0) { rec.weaponId = warehouse[bestIdx].id; warehouse.splice(bestIdx, 1); rec.allocatedAmmo = 0; }
 }
 
-function restDoContinue() { if (restPhase !== 'DONE' || overCap()) return; restSel = null; advanceNode(); }
+function restDoContinue() {
+  if (restPhase !== 'DONE' || overCap()) return;
+  restSel = null; restTutorial = false;
+  if (roadCurrent == null) { scene = 'MAP'; releasePointer(); }   // 序章休息（未選過節點）→ 進路線圖
+  else advanceNode();                                             // 正式 REST 節點 → 開放後繼
+}
 
 // --- 配裝/彈藥管理（CHOICE 與 DONE 階段皆可操作）---
 function setMemberWeapon(mi, newId) {
@@ -986,6 +1184,7 @@ function nearestInteractable(u) {
   for (const d of MAP.doors) { const dd = distToDoor(u.pos, d); if (dd < bd) { bd = dd; best = { type: 'door', door: d }; } }
   for (const b of MAP.buttons) { const dd = dist(u.pos, { x: b.x, y: b.y }); if (dd < bd) { bd = dd; best = { type: 'button', button: b }; } }
   for (const pr of (prisoners || [])) { if (pr.freed) continue; const dd = dist(u.pos, pr.pos); if (dd < bd) { bd = dd; best = { type: 'prisoner', prisoner: pr }; } }
+  if (introConsole && !introConsole.used) { const dd = dist(u.pos, introConsole); if (dd < bd) { bd = dd; best = { type: 'console' }; } }   // 序章控制台
   return best;
 }
 function tryInteract() {
@@ -995,6 +1194,7 @@ function tryInteract() {
   if (it.type === 'door') it.door.open = !it.door.open;
   else if (it.type === 'button') { const d = MAP.doors.find(x => x.id === it.button.doorId); if (d) d.open = !d.open; }
   else if (it.type === 'prisoner') freePrisoner(it.prisoner);
+  else if (it.type === 'console') { introConsole.used = true; spawnPickup(introConsole); }   // 取得發射密碼
 }
 // 釋放俘虜 → 變成一名我方單位（隨機個性 + 底線 pistol；需自行撤離才永久入隊）
 function freePrisoner(pr) {
@@ -1284,6 +1484,11 @@ cv.addEventListener('mousemove', e => {
 cv.addEventListener('mousedown', e => {
   if (scene === 'EDITOR') { if (e.button === 2) editorEraseAt(snapPt({ x: mouse.mx, y: mouse.my })); else editorMouseDown(); return; }
   if (scene !== 'COMBAT' || !pointerLocked) return;
+  if (cutscene && cutscene.lock) {   // 演出：有對白→左鍵續播；無對白(處決拍)→放行 mouse.down 給 shoot 拍讀取
+    if (cutscene.line) { if (e.button === 0) cutscene.advance = true; return; }
+    if (e.button === 0) mouse.down = true;
+    return;
+  }
   if (e.button === 0) { seizeIfEscorting(); mouse.down = true; }          // 左鍵開火（護送中→立刻奪回、同幀開火）
   else if (e.button === 2) { seizeIfEscorting(); if (controlledId != null) useAbility(players[controlledId]); } // 右鍵放技能（護送中→奪回）
 });
@@ -1340,6 +1545,11 @@ window.addEventListener('keydown', e => {
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') initRun(); return; }
 
   // --- COMBAT ---
+  if (introActive && k === 'escape') { skipIntro(); e.preventDefault(); return; }   // 第0關：Esc 跳過演出（休息關仍進）
+  if (cutscene && cutscene.lock) {   // 演出鎖控制：只接受對白續播，其餘戰鬥鍵封鎖
+    if ((k === ' ' || k === 'enter') && cutscene.line) { cutscene.advance = true; e.preventDefault(); }
+    return;
+  }
   if (fromEditor && k === 'backspace') { fromEditor = false; forcedMap = null; scene = 'EDITOR'; releasePointer(); editMsg = '已中止試玩，回到編輯器'; e.preventDefault(); return; }
   if (k >= '1' && k <= '9') {
     const i = parseInt(k, 10) - 1;
@@ -1363,7 +1573,9 @@ window.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 function update(dt) {
   if (scene !== 'COMBAT') return;   // MAP/REST/結算：不模擬、不需鏡頭（此時 cam/players 可能尚未建立）
   if (!pointerLocked) return;       // 戰鬥：滑鼠鎖定後才開始/繼續推進（未鎖定＝暫停）
+  if (cutscene) cutsceneTick(dt);   // 第0關演出導演（推進節拍）
   updateCamera(dt);
+  if (cutscene && cutscene.lock) return;   // 演出鎖控制：只跑鏡頭/演出，不跑常規 sim
 
   for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
   for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; tickAmmo(e, dt); }
@@ -1461,12 +1673,12 @@ function draw() {
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
   drawGrid(); drawLowWalls(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
-  drawDrops(); drawPrisoners(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
+  drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
   if (debugView) drawDebug();
   ctx.restore();
 
-  // ---- 戰爭迷霧（除錯時關閉）----
-  if (!debugView) drawFog();
+  // ---- 戰爭迷霧（除錯時關閉；演出鎖控制時關閉＝電影感全視野）----
+  if (!debugView && !(cutscene && cutscene.lock)) drawFog();
 
   // ---- 霧上：淡牆骨架（空間參考）----
   ctx.save(); applyCam(); drawSkeleton(); ctx.restore();
@@ -1475,6 +1687,52 @@ function draw() {
   drawScreenOverlays();
   drawHUD();
   drawCards();
+  if (cutscene) drawCutscene();   // 第0關：對白框 + 字幕（最上層）
+}
+
+// 第0關演出 actor（守衛＝非戰鬥單位點 + 名牌；控制台＝互動標記），畫在世界層
+function drawIntroActors() {
+  for (const g of introGuards) {
+    ctx.strokeStyle = hsl(g.hue, 60, 70); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(g.pos.x, g.pos.y); ctx.lineTo(g.pos.x + Math.cos(g.facing) * 20, g.pos.y + Math.sin(g.facing) * 20); ctx.stroke();
+    ctx.fillStyle = hsl(g.hue, 55, 45); ctx.beginPath(); ctx.arc(g.pos.x, g.pos.y, CONFIG.unitRadius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = hsl(g.hue, 60, 72); ctx.beginPath(); ctx.arc(g.pos.x, g.pos.y, CONFIG.unitRadius, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (introConsole && !introConsole.used) {
+    const c = introConsole, pulse = 0.5 + 0.5 * Math.sin(simTime * 5);
+    ctx.strokeStyle = `rgba(127,227,255,${0.5 + 0.4 * pulse})`; ctx.lineWidth = 2;
+    ctx.strokeRect(c.x - 12, c.y - 10, 24, 20);
+    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 11px Consolas'; ctx.textAlign = 'center';
+    ctx.fillText('密碼', c.x, c.y + 4); ctx.textAlign = 'left';
+  }
+}
+
+// 第0關：對白框（下）+ 字幕/目標（上），螢幕座標
+function drawCutscene() {
+  const cs = cutscene;
+  if (cs.subtitle) {
+    ctx.textAlign = 'center';
+    const tw = ctx.measureText(cs.subtitle).width;
+    ctx.font = 'bold 16px Consolas';
+    const w = Math.max(260, ctx.measureText(cs.subtitle).width + 48);
+    ctx.fillStyle = 'rgba(10,14,20,0.78)'; ctx.fillRect(cv.width / 2 - w / 2, 22, w, 34);
+    ctx.fillStyle = '#ffe08a'; ctx.fillText(cs.subtitle, cv.width / 2, 44);
+    ctx.textAlign = 'left';
+  }
+  if (cs.line) {
+    const bx = 140, bw = cv.width - 280, by = cv.height - 150, bh = 96;
+    ctx.fillStyle = 'rgba(8,11,16,0.9)'; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = 'rgba(127,227,255,0.5)'; ctx.lineWidth = 2; ctx.strokeRect(bx, by, bw, bh);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText(cs.line.who, bx + 18, by + 28);
+    ctx.fillStyle = '#e6edf3'; ctx.font = '16px Consolas'; ctx.fillText(cs.line.text, bx + 18, by + 58);
+    ctx.fillStyle = 'rgba(205,214,224,0.55)'; ctx.font = '11px Consolas'; ctx.textAlign = 'right';
+    ctx.fillText('▶ 左鍵 / 空白 繼續', bx + bw - 14, by + bh - 12); ctx.textAlign = 'left';
+  }
+  if (introActive) {   // 跳過提示（右下角）
+    ctx.fillStyle = 'rgba(205,214,224,0.5)'; ctx.font = '11px Consolas'; ctx.textAlign = 'right';
+    ctx.fillText('Esc：跳過演出', cv.width - 14, 18); ctx.textAlign = 'left';
+  }
 }
 
 function drawGrid() {
@@ -1700,9 +1958,9 @@ function drawScreenOverlays() {
     // 互動提示（在範圍內的門/按鈕/俘虜上方）
     const it = nearestInteractable(u);
     if (it) {
-      const wpos = it.type === 'door' ? doorMid(it.door) : it.type === 'button' ? { x: it.button.x, y: it.button.y } : it.prisoner.pos;
+      const wpos = it.type === 'door' ? doorMid(it.door) : it.type === 'button' ? { x: it.button.x, y: it.button.y } : it.type === 'console' ? { x: introConsole.x, y: introConsole.y } : it.prisoner.pos;
       const ips = w2s(wpos);
-      const label = it.type === 'button' ? 'E：啟動按鈕' : it.type === 'prisoner' ? 'E：釋放俘虜' : (it.door.open ? 'E：關門' : 'E：開門');
+      const label = it.type === 'button' ? 'E：啟動按鈕' : it.type === 'prisoner' ? 'E：釋放俘虜' : it.type === 'console' ? 'E：取得發射密碼' : (it.door.open ? 'E：關門' : 'E：開門');
       ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center';
       const tw = ctx.measureText(label).width + 12;
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(ips.x - tw / 2, ips.y - 30, tw, 18);
@@ -2069,6 +2327,29 @@ function drawRest() {
     ctx.textAlign = 'center'; ctx.fillStyle = '#ffd27d'; ctx.font = 'bold 16px Consolas';
     ctx.fillText('▶ 點選要套用此升級的成員（上方卡片）', cv.width / 2, 78); ctx.textAlign = 'left';
   }
+  if (restTutorial) drawRestTutorial();
+}
+// 序章休息：一次性說明面板（停靠左上，不擋中央卡片/倉庫）
+function drawRestTutorial() {
+  const x = 12, y = 84, w = 250;
+  const lines = [
+    ['休息關 — 你可以：', '#7fe3ff'],
+    ['• 搜刮(1)：三選一，拿補給 / 武器', '#cdd6e0'],
+    ['  裝備 / 技能 / 道具 / 質升級', '#cdd6e0'],
+    ['• 喚醒(2)：+1 隊員（先把倉庫', '#cdd6e0'],
+    ['  整理到上限內才可喚醒）', '#cdd6e0'],
+    ['• 配裝：點倉庫物→點成員裝上；', '#cdd6e0'],
+    ['  ▸ 卸下回倉庫', '#cdd6e0'],
+    ['• 彈藥：± 分配各員備彈', '#cdd6e0'],
+    ['  （共用儲備）', '#cdd6e0'],
+    ['完成後按 空白 / 繼續 出發', '#ffd27d'],
+    ['（此說明僅序章顯示一次）', 'rgba(160,180,200,0.6)'],
+  ];
+  const h = 14 + lines.length * 18 + 8;
+  ctx.fillStyle = 'rgba(10,14,20,0.9)'; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = 'rgba(127,227,255,0.45)'; ctx.lineWidth = 2; ctx.strokeRect(x, y, w, h);
+  ctx.textAlign = 'left';
+  lines.forEach((ln, i) => { ctx.fillStyle = ln[1]; ctx.font = (i === 0 ? 'bold 13px' : '12px') + ' Consolas'; ctx.fillText(ln[0], x + 12, y + 24 + i * 18); });
 }
 function drawRunEnd() {
   ctx.fillStyle = 'rgba(8,10,14,0.95)'; ctx.fillRect(0, 0, cv.width, cv.height);
