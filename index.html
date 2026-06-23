@@ -136,7 +136,9 @@ const CONFIG = {
   //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
   hunt: { searchHops: 3, knownGrace: 0.5 },
   // 打擊感（juice）：子彈近 hitscan(速度×mul)＋曳光、開火後座/相機踢、命中/擊殺螢幕震動、擊殺頓幀。皆可即時調。
-  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 5, shakeFire: 1.2, shakeHit: 3, shakeKill: 8, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.08 },
+  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 5, shakeFire: 1.2, shakeHit: 3, shakeKill: 8, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.08,
+    hitFlash: 0.12, flinch: 5,                                              // 受擊：閃白時長 / 後仰位移(px)
+    deathCamTime: 0.9, deathCamSlow: 0.35, deathCamZoom: 1.25, deathHitstop: 0.12 },   // 我方陣亡鏡頭：帶到死亡點+慢動作時長 / 慢動作倍率 / 拉近 / 觸發頓幀
 
   // --- 額外佔位 ---
   unitRadius: 12,
@@ -719,6 +721,8 @@ function updateCamera(dt) {
   if (!cam) return;   // 安全防護：非戰鬥場景 cam 可能尚未建立
   // 演出固定機位（cutscene.cam 非 null）：俯視框住場面，不跟單位
   if (cutscene && cutscene.cam) { camTarget.x = cutscene.cam.x; camTarget.y = cutscene.cam.y; camTarget.angle = cutscene.cam.angle; }
+  // 我方陣亡鏡頭：帶到死亡點（保留當下角度），結束後自動回到跟隨
+  else if (deathCamT > 0 && deathCamPos) { camTarget.x = deathCamPos.x; camTarget.y = deathCamPos.y; }
   // 跟隨被附身單位：手動控制(CONTROLLED) 或 護送撤離中(EXTRACTING) 都跟（撤出/陣亡後 controlledId 會被清空，鏡頭定住）
   else if (controlledId != null && (players[controlledId].state === 'CONTROLLED' || players[controlledId].state === 'EXTRACTING')) {
     const f = players[controlledId];
@@ -730,8 +734,10 @@ function updateCamera(dt) {
   cam.x += (camTarget.x - cam.x) * kp;
   cam.y += (camTarget.y - cam.y) * kp;
   cam.angle += angDiff(camTarget.angle, cam.angle) * ka;
-  // 望遠：鏡頭微縮 + 錨點往下(看更前方)，平滑過渡
-  const sc = isScoping(), tScale = sc ? CONFIG.scope.scale : CONFIG.camera.scale, tAnchor = sc ? CONFIG.scope.anchorY : CONFIG.camera.anchorY;
+  // 望遠：鏡頭微縮 + 錨點往下(看更前方)，平滑過渡。我方陣亡鏡頭：拉近 + 置中(0.5)
+  const sc = isScoping();
+  const tScale = deathCamT > 0 ? CONFIG.juice.deathCamZoom : (sc ? CONFIG.scope.scale : CONFIG.camera.scale);
+  const tAnchor = deathCamT > 0 ? 0.5 : (sc ? CONFIG.scope.anchorY : CONFIG.camera.anchorY);
   cam.scale += (tScale - cam.scale) * kp;
   camAnchorY += (tAnchor - camAnchorY) * kp;
 }
@@ -772,6 +778,8 @@ let backpack;                // 臨時背包：任務中撿到、待休息關處
 let ammoStock;               // 共用彈藥儲備 {weaponId: number}（按武器類別）
 let drops;                   // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
 let corpses = [];            // 陣亡標記 [{x,y,enemy}]（地上叉叉，整場保留）
+let decals = [];             // 地上血漬/痕跡 [{x,y,r,col}]（上限淘汰、整場保留）
+let deathCamT = 0, deathCamPos = null;   // 我方陣亡鏡頭：>0 時相機帶到死亡點 + 慢動作
 let prisoners;               // 戰鬥中的俘虜 [{pos, freed}]（E 釋放→加入我方，撤離成功才入隊）
 let restPhase;               // 休息關流程：CHOICE | OFFERS | TARGET | DONE
 let restOffers, restPick, restPendingUpgrade;  // 搜刮抽選 / 已選 / 待指定目標的升級
@@ -899,7 +907,7 @@ function startMission() {
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }   // 破壞物重置為初始形態/滿 HP
   players = roster.map((r, i) => makePlayer(i, r, spawnPos(i, roster.length)));
   controlledId = 0;
-  enemies = []; bullets = []; particles = []; corpses = [];
+  enemies = []; bullets = []; particles = []; corpses = []; decals = []; deathCamT = 0; deathCamPos = null; shakeAmt = 0; kickY = 0; hitstopT = 0;
   reservations = new Map(); patrolClaims = new Map(); enemyIdSeq = 1; drops = [];
   prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
   for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type); enemies.push(e); commitReservation(e, e.currentNode); }
@@ -943,7 +951,7 @@ function startIntro() {
   buildMapDerived('intro');
   for (const d of MAP.doors) d.open = false;
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }
-  reservations = new Map(); patrolClaims = new Map(); patrolPool = []; enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = []; corpses = [];
+  reservations = new Map(); patrolClaims = new Map(); patrolPool = []; enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = []; corpses = []; decals = []; deathCamT = 0; deathCamPos = null; shakeAmt = 0; kickY = 0; hitstopT = 0;
   searchFocusNode = null; searchSet = null; searchCleared = null; searchConsumedT = -Infinity;
   // 主角＝players[0]（管制室，看著下方）；演出期由腳本移動，鏡頭固定，控制鎖住
   players = [makePlayer(0, introCast[0], { x: 390, y: 240 })];
@@ -1382,17 +1390,23 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
   if (u.faction === 'player') u.alertTimer = CONFIG.ghostAlertTime;
   if (flanked || surprise) spawnCrit(u.pos); else spawnHit(u.pos);   // 繞背/突襲命中＝不同火花
   addShakeAt(u.pos, (flanked || surprise) ? CONFIG.juice.shakeHit * 1.6 : CONFIG.juice.shakeHit);   // 命中震動（依離相機衰減）
+  u.hitFlash = CONFIG.juice.hitFlash;                                 // 受擊閃白
+  const pa = (fromAng != null) ? fromAng + Math.PI : u.facing;        // 子彈推進方向（背向射手）
+  u.flinchX = Math.cos(pa) * CONFIG.juice.flinch; u.flinchY = Math.sin(pa) * CONFIG.juice.flinch;   // 後仰（繪製偏移）
+  spawnBlood(u.pos, pa); pushDecal(u.pos.x, u.pos.y, 3 + Math.random() * 3, 'rgba(122,20,28,0.5)');  // 血霧 + 地上血漬
   if (u.hp <= 0) killUnit(u);
 }
 function killUnit(u) {
   spawnDeath(u.pos);
   hitstop(CONFIG.juice.hitstopKill); addShakeAt(u.pos, CONFIG.juice.shakeKill);   // 擊殺：頓幀 + 較大震動
+  pushDecal(u.pos.x, u.pos.y, 8 + Math.random() * 3, 'rgba(92,15,22,0.5)');       // 死亡血池
   corpses.push({ x: u.pos.x, y: u.pos.y, enemy: u.faction === 'enemy' });   // 地上留陣亡叉叉（整場保留）
   if (u.faction === 'enemy') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); releasePatrol(u); }
   else {
     spawnDrop(u, CONFIG.ammo.salvageAlly);
     const wasControlled = (u.state === 'CONTROLLED') || controlledId === u.id;
     u.state = 'DEAD'; deadCount++;
+    deathCamPos = { x: u.pos.x, y: u.pos.y }; deathCamT = CONFIG.juice.deathCamTime; hitstop(CONFIG.juice.deathHitstop);   // 我方陣亡：鏡頭帶過去 + 慢動作 + 頓一下
     if (wasControlled) { controlledId = null; autoPossess(u.pos); }
   }
 }
@@ -1838,6 +1852,8 @@ function spawnDeath(p) { Sfx.play('death'); for (let i = 0; i < 14; i++) particl
 function spawnHeal(p) { Sfx.play('heal'); for (let i = 0; i < 12; i++) particles.push(mkPart(p, 70, 0.55, '#7fffa8')); }
 function spawnPickup(p) { Sfx.play('pickup'); for (let i = 0; i < 10; i++) particles.push(mkPart(p, 90, 0.5, '#ffe08a')); }
 function mkPart(p, spd, life, col) { const a = Math.random() * Math.PI * 2, s = spd * (0.4 + Math.random() * 0.6); return { x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life, max: life, col }; }
+function spawnBlood(pos, ang) { for (let i = 0; i < 7; i++) { const a = ang + (Math.random() * 2 - 1) * 0.55, s = 70 + Math.random() * 180; particles.push({ x: pos.x, y: pos.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.25 + Math.random() * 0.25, max: 0.5, col: i % 3 ? '#b41f2a' : '#7a1420' }); } }   // 血霧：沿彈道噴濺
+function pushDecal(x, y, r, col) { decals.push({ x, y, r, col }); if (decals.length > 160) decals.shift(); }   // 地上血漬（上限淘汰）
 function updateParticles(dt) { for (let i = particles.length - 1; i >= 0; i--) { const q = particles[i]; q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; if (q.life <= 0) particles.splice(i, 1); } }
 
 /* =====================================================================
@@ -2006,8 +2022,9 @@ function update(dt) {
   shakeAmt = Math.max(0, shakeAmt - CONFIG.juice.shakeDecay * dt); kickY *= Math.exp(-CONFIG.juice.shakeDecay * dt);   // 震動/相機踢衰減
   if (cutscene && cutscene.lock) return;   // 演出鎖控制：只跑鏡頭/演出，不跑常規 sim
 
-  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.recoil > 0) p.recoil = Math.max(0, p.recoil - CONFIG.juice.recoilDecay * dt); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
-  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; if (e.recoil > 0) e.recoil = Math.max(0, e.recoil - CONFIG.juice.recoilDecay * dt); tickAmmo(e, dt); }
+  const juiceDecay = (u) => { if (u.recoil > 0) u.recoil = Math.max(0, u.recoil - CONFIG.juice.recoilDecay * dt); if (u.hitFlash > 0) u.hitFlash -= dt; if (u.flinchX) { u.flinchX *= Math.exp(-22 * dt); u.flinchY *= Math.exp(-22 * dt); } };
+  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; juiceDecay(p); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
+  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; juiceDecay(e); tickAmmo(e, dt); }
 
   // 0) 護送 seize：護送(controlledId 指向 EXTRACTING)時，移動或開火 → 奪回手動、撤離中斷（滑鼠轉視野不算）
   if (controlledId != null && players[controlledId].state === 'EXTRACTING') {
@@ -2111,7 +2128,7 @@ function draw() {
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
   drawGrid(); drawBushes(); drawLowWalls(); drawDestructibles(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
-  drawCorpses(); drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
+  drawDecals(); drawCorpses(); drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawEnemies(); drawPlayers();
   if (debugView) drawDebug();
   ctx.restore();
 
@@ -2124,6 +2141,13 @@ function draw() {
   // ---- 螢幕層：血條/標記/HUD/卡片 ----（演出鎖控制時隱藏＝乾淨電影感；gate 解鎖時照常）
   if (!(cutscene && cutscene.lock)) { drawScreenOverlays(); drawHUD(); drawCards(); }
   if (cutscene) drawCutscene();   // 第0關：對話泡 + 字幕（最上層）
+  // 我方陣亡鏡頭：暗紅暈影（依剩餘時間淡出）
+  if (deathCamT > 0) {
+    ctx.save(); ctx.globalAlpha = clamp(deathCamT / CONFIG.juice.deathCamTime, 0, 1) * 0.5;
+    const g = ctx.createRadialGradient(cv.width / 2, cv.height / 2, cv.height * 0.32, cv.width / 2, cv.height / 2, cv.height * 0.75);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(120,0,12,0.9)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, cv.width, cv.height); ctx.restore(); ctx.globalAlpha = 1;
+  }
 }
 
 // 第0關演出 actor（守衛＝非戰鬥單位點 + 名牌；控制台＝互動標記），畫在世界層
@@ -2260,6 +2284,9 @@ function drawDestructibles() {
 }
 const seg = (d) => { ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke(); };
 // 陣亡標記：地上叉叉（敵紅/我藍，整場保留；在世界層、會被迷霧蓋）
+function drawDecals() {   // 地上血漬（在屍體/單位之下）
+  for (const d of decals) { ctx.fillStyle = d.col; ctx.beginPath(); ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2); ctx.fill(); }
+}
 function drawCorpses() {
   ctx.lineWidth = 2; const r = 7;
   for (const c of corpses) {
@@ -3491,7 +3518,11 @@ function frame(now) {
   let delta = (now - last) / 1000; last = now;
   if (delta > 0.25) delta = 0.25;
   if (hitstopT > 0) { hitstopT -= delta; }          // 頓幀：凍結模擬、畫面續繪（不快轉補回）
-  else { acc += delta; while (acc >= FIXED) { update(FIXED); acc -= FIXED; } }
+  else {
+    if (deathCamT > 0) deathCamT -= delta;          // 我方陣亡鏡頭以真實時間倒數
+    acc += delta * (deathCamT > 0 ? CONFIG.juice.deathCamSlow : 1);   // 陣亡鏡頭期間慢動作
+    while (acc >= FIXED) { update(FIXED); acc -= FIXED; }
+  }
   draw();
   requestAnimationFrame(frame);
 }
