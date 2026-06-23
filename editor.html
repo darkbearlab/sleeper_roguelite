@@ -16,6 +16,9 @@
   header button{cursor:pointer}
   header button:hover{background:#15202c}
   #btnbar{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto;align-items:center}
+  .muted{color:#5a6470}
+  #btnbar .grp{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border:1px solid #1c2430;border-radius:6px;background:#0c1119}
+  #btnbar .gl{color:#6b7686;font-size:10px;letter-spacing:1px;margin-right:1px;align-self:center}
   main{display:grid;grid-template-columns:128px 1fr 248px;min-height:0}
   #tools{background:#0a0e14;border-right:1px solid #1f2733;padding:8px 6px;display:flex;flex-direction:column;gap:5px;overflow:auto}
   #tools .hd{color:#5a6470;margin:4px 2px 0;font-size:11px}
@@ -53,26 +56,33 @@
     <span class="tabbtn" data-tab="enemies">③ 敵人配置</span>
     <span class="tabbtn" data-tab="underlay">④ 底圖</span>
     <span id="btnbar">
-      <label class="muted">maps.json</label>
-      <select id="mapPick" title="切換要編輯的地圖"></select>
-      <button id="btnMapAdd" title="新增一張地圖到庫">＋</button>
-      <button id="btnMapDel" title="從庫刪除目前地圖">🗑</button>
-      <label class="muted">鍵</label><input id="mapKey" style="width:78px" title="此地圖在 maps.json 的鍵名（英數/底線）">
-      <button id="btnLibLoad" title="讀入一個 maps.json（取代整個庫）">讀入</button>
-      <button id="btnLibSave" title="下載整個庫成 maps.json">下載</button>
-      <span style="width:1px;align-self:stretch;background:#2a3442;margin:0 4px"></span>
-      <label class="muted">名稱</label><input id="mapLabel" style="width:120px">
-      <select id="tplSel" title="載入範本/現有地圖"></select>
-      <button id="btnNew">新建</button>
-      <label class="muted">尺寸</label><input id="mapW" type="number" style="width:56px" title="地圖寬"><span class="muted">×</span><input id="mapH" type="number" style="width:56px" title="地圖高">
-      <button id="btnWall" title="依目前尺寸重建邊界外牆">外牆</button>
-      <button id="btnFit">適配視窗</button>
-      <button id="btnGrid">格線:開</button>
-      <button id="btnUndo" title="Ctrl+Z">復原</button>
-      <button id="btnRedo" title="Ctrl+Y">重做</button>
-      <button id="btnImport">匯入</button>
-      <button id="btnExport">匯出</button>
-      <button id="btnPlaytest" title="把目前這張地圖帶進遊戲的自由戰鬥試打（結束/離開會回到編輯器）">▶ 測試戰鬥</button>
+      <span class="grp"><span class="gl" title="一個 maps.json 檔可裝多張地圖">地圖庫</span>
+        <select id="mapPick" title="切換要編輯的地圖（maps.json 內的一張）"></select>
+        <button id="btnMapAdd" title="新增一張空白地圖到庫">＋</button>
+        <button id="btnMapDel" title="從庫刪除目前地圖">🗑</button>
+        <input id="mapKey" style="width:70px" placeholder="鍵名" title="此地圖在 maps.json 的鍵名（英數/底線）">
+        <button id="btnLibLoad" title="讀入一個 maps.json（取代整個庫）">讀入</button>
+        <button id="btnLibSave" title="下載整個庫成 maps.json">下載</button>
+      </span>
+      <span class="grp"><span class="gl" title="目前正在編輯的這一張地圖">本圖</span>
+        <input id="mapLabel" style="width:92px" placeholder="名稱" title="此地圖的顯示名稱 label">
+        <select id="tplSel" title="以範本/現有地圖開新的一張（會覆蓋目前這張的內容）"></select>
+        <button id="btnNew" title="清成空白地圖（覆蓋目前這張）">空白</button>
+        <span class="muted">尺寸</span><input id="mapW" type="number" style="width:50px" title="地圖寬 (px)"><span class="muted">×</span><input id="mapH" type="number" style="width:50px" title="地圖高 (px)">
+        <button id="btnWall" title="依目前尺寸重建邊界外牆">外牆</button>
+      </span>
+      <span class="grp"><span class="gl">檢視</span>
+        <button id="btnGrid" title="格線吸附開關">格線:開</button>
+        <button id="btnFit" title="縮放置中、看到整張地圖">適配</button>
+        <button id="btnUndo" title="復原 Ctrl+Z">↶</button>
+        <button id="btnRedo" title="重做 Ctrl+Y">↷</button>
+      </span>
+      <span class="grp"><span class="gl" title="只針對目前這一張">單張</span>
+        <button id="btnImport" title="貼上單張地圖 JSON 載入（覆蓋目前這張）">匯入</button>
+        <button id="btnExport" title="匯出目前這張：純 JSON 或 MAPS 片段">匯出</button>
+        <button id="btnPlaytest" title="把目前這張帶進遊戲的自由戰鬥試打（結束/離開回編輯器）">▶ 測試戰鬥</button>
+      </span>
+      <button id="btnHelp" title="使用說明" style="align-self:center">？</button>
     </span>
   </header>
   <main>
@@ -99,6 +109,26 @@
 
 /* ---- 與 index.html 同步的小常數（編輯器自帶一份；數量少、變動低）---- */
 const WORLD = { w: 1280, h: 720 };
+const PX_PER_M = 40;   // 比例尺參考：1 公尺＝40px（單位半徑12px≈肩寬0.6m、門口~3m、本圖約 32×18m）。僅編輯器視覺參考，遊戲不強制。
+const EDITOR_HELP = [
+  '地圖編輯器 — 使用說明',
+  '',
+  '【分頁】',
+  '① 地圖物件：牆 / 門 / 低矮牆 / 可破壞物 / 草叢 / 按鈕 / 進撤點 / ★特徵庫(整組房間長廊等)',
+  '② Waypoint/連線：敵人與撤離走的路網。刪點會自動重編號(遊戲以陣列索引當 id)',
+  '③ 敵人配置：在 waypoint 上放敵人類型 / 個性 / 朝向',
+  '④ 底圖：墊一張真實平面圖描著畫，只供參考、不會匯出',
+  '',
+  '【畫布】左鍵放置/拖曳 · 右鍵刪除 · 中鍵或空白+拖曳=平移 · 滾輪=縮放(繞游標)',
+  '左側工具列依分頁切換；右側屬性面板編輯選取物的精確數值。',
+  '',
+  '【地圖庫 maps.json】一個檔裝多張地圖：讀入整份 → 下拉切換 / ＋新增 / 🗑刪除 / 改鍵名 → 下載整份。',
+  '【本圖】名稱=顯示用 label；可從範本或單張 JSON 開新的一張(會覆蓋目前這張)。',
+  '【▶ 測試戰鬥】把目前這張帶進遊戲自由戰鬥試打，結束/離開回編輯器(工作區會自動還原)。',
+  '',
+  '【比例尺】地圖左下角的方框＝1 公尺(長×寬)，供比例參考。',
+  '【踩雷】低矮牆/擋移動的破壞物別壓在 waypoint 連線上——敵人無真尋路會卡牆(會以紅線標示)。',
+].join('\n');
 const ENEMY_TYPE_IDS = ['grunt', 'grunt_flank', 'dog', 'heavy_lmg', 'heavy_shot'];
 const ENEMY_META = {
   grunt:       { name: '步兵(衝鋒)', hue: 0,   cone: 45, range: 340 },
@@ -1089,7 +1119,18 @@ function render() {
   // 選取高亮 + 群組外框 + 新建預覽
   if (selRefs.length > 1) drawGroupBox(); else drawSelection();
   drawDragPreview();
+  drawScaleRef();   // 左下角 1 公尺比例尺參考
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+// 比例尺：地圖左下角畫 1 公尺×1 公尺參考方框（世界空間＝代表真實 1m、隨縮放）
+function drawScaleRef() {
+  const m = PX_PER_M, k = 1 / view.scale, x0 = 20, y1 = map.height - 20, y0 = y1 - m, x1 = x0 + m;
+  ctx.setLineDash([5 * k, 4 * k]); ctx.lineWidth = 1.4 * k; ctx.strokeStyle = 'rgba(127,227,255,0.45)';
+  ctx.strokeRect(x0, y0, m, m); ctx.setLineDash([]);
+  ctx.strokeStyle = 'rgba(127,227,255,0.95)'; ctx.lineWidth = 2.4 * k;   // L 形強調＝長 × 寬
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.fillStyle = 'rgba(190,230,255,0.95)'; ctx.font = (11 * k) + 'px Consolas'; ctx.textAlign = 'left';
+  ctx.fillText('1 公尺 (' + m + 'px)', x0, y1 + 13 * k); ctx.textAlign = 'center';
 }
 function drawGroupBox() {
   const b = bboxOfRefs(selRefs); if (!b) return;
@@ -1176,6 +1217,7 @@ function init() {
   ]));
   document.getElementById('ovclose').addEventListener('click', closeOverlay);
   document.getElementById('btnPlaytest').addEventListener('click', () => { try { location.href = playtestCurrent(); } catch (e) {} });
+  document.getElementById('btnHelp').addEventListener('click', () => openOverlay('地圖編輯器 — 使用說明', EDITOR_HELP, []));
   function sel0() { if (ovText.select) ovText.select(); }
 
   // maps.json 地圖庫：切換 / 新增 / 刪除 / 改鍵 / 讀入 / 下載
