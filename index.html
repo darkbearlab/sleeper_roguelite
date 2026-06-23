@@ -778,10 +778,10 @@ let editDestructPreset = 0;
 let roster;                  // 跨關攜帶的陣容（撤出者存活、陣亡者損失）
 let missionIndex;            // 已清的戰鬥數（用於難度遞增/HUD）
 let restMsg, lastSummary;    // 休息關狀態
-let warehouse;               // 共用倉庫：未裝備物品 [{kind:'weapon'|'ability', id}]（有上限）
-let backpack;                // 臨時背包：任務中撿到、待休息關處理 [{kind, id, ammo}]（無上限、任務中不可動用）
-let ammoStock;               // 共用彈藥儲備 {weaponId: number}（按武器類別）
-let drops;                   // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
+let warehouse = [];          // 共用倉庫：未裝備物品 [{kind:'weapon'|'ability', id}]（有上限）。預設空＝沙盒/選單不經 initRun 也不為 undefined
+let backpack = [];           // 臨時背包：任務中撿到、待休息關處理 [{kind, id, ammo}]（無上限、任務中不可動用）
+let ammoStock = {};          // 共用彈藥儲備 {weaponId: number}（按武器類別）
+let drops = [];              // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
 let fileDrop = null;         // 機密檔案掉在地上時的位置 {x,y}（攜帶者陣亡→掉落，任一我方走過即拾起；穿迷霧永遠可見）
 let loseReason = '';         // RUN FAILED 原因：'全滅' | '機密檔案遺失'
 let corpses = [];            // 陣亡標記 [{x,y,enemy}]（地上叉叉，整場保留）
