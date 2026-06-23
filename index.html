@@ -495,7 +495,7 @@ const MAPS = {
       { x1: 900, y1: 300, x2: 900, y2: 680 },    // 隔牆下
     ],
     doors: [
-      { id: 'exit', x1: 900, y1: 200, x2: 900, y2: 300, open: false },   // 出口門（E 開）
+      { id: 'exit', x1: 900, y1: 200, x2: 900, y2: 300, open: false },   // 出口門（F 開）
     ],
     lowWalls: [
       { x1: 260, y1: 296, x2: 460, y2: 296 },    // 管制室「窗台/欄杆」（純裝飾，看著下方）
@@ -805,6 +805,7 @@ function makePlayer(i, cfg, pos) {
     fireCooldown: 0, engageTimer: 0, alertTimer: 0, muzzle: 0, sprinting: false,
     idleAnchor: 0, sweepPhase: 0, sweepDir: 1, extractNode: null,   // idleAnchor＝進入閒置時的正前方
     burstLeft: CONFIG.idleTap.size, burstCd: 0, wanderTarget: 0, wanderTimer: 0,
+    stance: 'defend',   // 交戰姿態：'defend'(預設＝只對已交戰敵 overwatch) / 'engage'(對視野內任何敵 overwatch)。僅影響非附身單位自動開火
   };
 }
 function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.PI, typeId = 'grunt') {
@@ -955,10 +956,10 @@ function introBeats(victim) {
     { kind: 'shoot', text: '按下左鍵攻擊' },                            // 等待左鍵 → 處決同僚
     { kind: 'wait', dur: 0.5 },
     { kind: 'cam', to: 'follow' },                                       // 交接：鏡頭轉為跟隨主角（恢復一般迷霧）
-    { kind: 'sub', text: '取得發射密碼（走到控制台按 E）' },
+    { kind: 'sub', text: '取得發射密碼（走到控制台按 F）' },
     { kind: 'do', fn: () => { introConsole = { x: 700, y: 240, used: false }; } },
     { kind: 'gate', on: 'codes' },
-    { kind: 'sub', text: '前往出口、按 E 開門' },
+    { kind: 'sub', text: '前往出口、按 F 開門' },
     { kind: 'gate', on: 'door' },
     { kind: 'sub', text: '' },
     { kind: 'cam', to: { x: 980, y: 240, angle: 0 } },                   // 開門後：固定機位看廊道
@@ -1324,6 +1325,8 @@ function useItem(u) {
   if (it.buff) { u.buffT = it.buff.dur; u.buffMove = it.buff.moveMul || 1; u.buffFire = it.buff.fireRateMul || 1; spawnHeal(u.pos); }
   u.itemUsed = true;   // 用完即消（rosterFromPlayer 不再帶回）
 }
+// 交戰姿態（E=engage 主動 / Q=defend 防守）：設在指定單位，影響其非附身時的 overwatch 開火條件（idleTick）
+function setStance(u, s) { if (u && (s === 'engage' || s === 'defend')) { u.stance = s; Sfx.play('stance'); } }
 
 // 手動：基礎+連射 bloom（玩家扳機紀律＝技巧）。敵人：同手動會 bloom。
 const manualFire = (u, ang) => fireUnit(u, ang, (u.weapon.spreadBase + u.bloom) * (isScoping() ? CONFIG.scope.spreadMul : 1), 1, u.weapon.spreadPerShot);   // 望遠＝降發散穩定
@@ -1480,11 +1483,11 @@ function idleTick(u, dt, lockFacing) {
   } // HOLD：維持閒置正前方
   if (u.alertTimer > 0) u.alertTimer -= dt;
 
-  // 交戰目標：感知到 + 在射程內 + **敵已交戰**（overwatch 不對未警覺 IDLE 敵開火＝不破壞潛行；被附身單位手動開火不受此限）
+  // 交戰目標：感知到 + 在射程內。Defend(預設)＝只打已交戰敵(不破壞潛行)；Engage＝視野內任何敵都打(會主動開戰)。被附身單位手動開火不受此限
   let target = null, td = Infinity;
   for (const e of enemies) {
     if (e.dead || st.targeting === 'NONE') continue;
-    if (e.state !== 'ENGAGED') continue;
+    if (u.stance !== 'engage' && e.state !== 'ENGAGED') continue;
     if (!canSee(u, e.pos)) continue;
     const d = dist(u.pos, e.pos);
     if (d <= W.range && d < td) { td = d; target = e; }
@@ -1827,8 +1830,10 @@ window.addEventListener('keydown', e => {
   if (k === 'h') { if (e.shiftKey) extractAll(); else toggleExtract(); }                  // H 撤離(進入護送) / Shift+H 全體撤離
   if (k === ' ') { seizeIfEscorting(); if (controlledId != null) useAbility(players[controlledId]); }  // 空白鍵=技能（右鍵亦可）；護送中→奪回
   if (k === 'r') { seizeIfEscorting(); if (controlledId != null) startReload(players[controlledId]); } // 換彈；護送中→奪回
-  if (k === 'q') { seizeIfEscorting(); if (controlledId != null) useItem(players[controlledId]); }     // 道具；護送中→奪回
-  if (k === 'e') { seizeIfEscorting(); tryInteract(); }                                                // 互動：開關門/按鈕；護送中→奪回
+  if (k === 'c') { seizeIfEscorting(); if (controlledId != null) useItem(players[controlledId]); }     // 道具(原 Q)；護送中→奪回
+  if (k === 'f') { seizeIfEscorting(); tryInteract(); }                                                // 互動：開關門/按鈕(原 E)；護送中→奪回
+  if (k === 'e' && controlledId != null) setStance(players[controlledId], 'engage');                   // 姿態：主動清場（不奪回護送）
+  if (k === 'q' && controlledId != null) setStance(players[controlledId], 'defend');                   // 姿態：防守(現行閒置)（不奪回護送）
   if (k === 'g') debugView = !debugView;
   if (k === 'j') hysteresisOn = !hysteresisOn;   // (debug) 原 H，因 H 改作撤離而移位
   if ([' ', 'w', 'a', 's', 'd'].includes(k)) e.preventDefault();
@@ -2182,6 +2187,10 @@ function drawPlayers() {
     if (low) { const a = 0.35 + 0.35 * Math.sin(simTime * 16); ctx.strokeStyle = `rgba(255,60,60,${a})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(p.pos.x, p.pos.y, p.radius + 8, 0, Math.PI * 2); ctx.stroke(); }
     if (controlled) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.pos.x, p.pos.y, p.radius + 5, 0, Math.PI * 2); ctx.stroke(); }
     drawUnitBody(p, hsl(p.hue, 55, controlled ? 62 : 48), controlled ? '#ffffff' : hsl(p.hue, 60, 75), controlled ? 3 : 2);
+    if (p.stance === 'engage') {   // 主動姿態標示（會主動對視野內任何敵開火）；防守＝預設不標
+      ctx.fillStyle = 'rgba(255,110,80,0.95)'; ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center';
+      ctx.fillText('⚔', p.pos.x, p.pos.y - p.radius - 5); ctx.textAlign = 'left';
+    }
     if (inConceal(p.pos)) {   // 我方在草叢內＝隱蔽中（虛線綠圈）
       ctx.strokeStyle = 'rgba(120,220,140,0.8)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
       ctx.beginPath(); ctx.arc(p.pos.x, p.pos.y, p.radius + 6, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
@@ -2333,7 +2342,7 @@ function drawScreenOverlays() {
     if (it) {
       const wpos = it.type === 'door' ? doorMid(it.door) : it.type === 'button' ? { x: it.button.x, y: it.button.y } : it.type === 'console' ? { x: introConsole.x, y: introConsole.y } : it.prisoner.pos;
       const ips = w2s(wpos);
-      const label = it.type === 'button' ? 'E：啟動按鈕' : it.type === 'prisoner' ? 'E：釋放俘虜' : it.type === 'console' ? 'E：取得發射密碼' : (it.door.open ? 'E：關門' : 'E：開門');
+      const label = it.type === 'button' ? 'F：啟動按鈕' : it.type === 'prisoner' ? 'F：釋放俘虜' : it.type === 'console' ? 'F：取得發射密碼' : (it.door.open ? 'F：關門' : 'F：開門');
       ctx.font = 'bold 12px Consolas'; ctx.textAlign = 'center';
       const tw = ctx.measureText(label).width + 12;
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(ips.x - tw / 2, ips.y - 30, tw, 18);
@@ -2379,7 +2388,7 @@ function drawHUD() {
 
   // 控制提示（卡片帶上方）
   ctx.textAlign = 'center'; ctx.font = '11px Consolas'; ctx.fillStyle = 'rgba(205,214,224,0.55)';
-  ctx.fillText('滑鼠=轉向 · 左鍵開火 · 右鍵=望遠(穩定/禁奔跑) · 空白=技能 · WASD · Shift 奔跑 · R 換彈 · E 互動 · 1/2/3 附身 · H 撤離 · Shift+H 全體撤離', cv.width / 2, cv.height - 94);
+  ctx.fillText('滑鼠=轉向 · 左鍵開火 · 右鍵=望遠 · 空白=技能 · WASD · Shift 奔跑 · R 換彈 · F 互動 · C 道具 · E/Q 姿態(主動/防守) · 1/2/3 附身 · H 撤離 · Shift+H 全體', cv.width / 2, cv.height - 94);
   if (debugView || !hysteresisOn) {
     ctx.fillStyle = hysteresisOn ? '#7fe3ff' : '#ff9b5a';
     ctx.fillText(`hysteresis: ${hysteresisOn ? 'ON' : 'OFF (觀察抖動)'}    debug(無迷霧): ${debugView ? 'ON' : 'OFF'}`, cv.width / 2, cv.height - 108);
@@ -2445,7 +2454,7 @@ function drawCard(p, x, y, w, h, i) {
   if (!inactive) {
     ctx.textAlign = 'right'; ctx.font = '8px Consolas';
     ctx.fillStyle = p.equipId ? '#9fd0e0' : '#4a525c'; ctx.fillText('🛡' + (p.equipId ? EQUIPMENT[p.equipId].name : '—'), x + w - pad, y + 27);
-    ctx.fillStyle = (p.itemId && !p.itemUsed) ? '#ffd27d' : '#4a525c'; ctx.fillText('Q ' + (p.itemId && !p.itemUsed ? ITEMS[p.itemId].name : (p.itemId ? '用過' : '—')), x + w - pad, y + 38);
+    ctx.fillStyle = (p.itemId && !p.itemUsed) ? '#ffd27d' : '#4a525c'; ctx.fillText('C ' + (p.itemId && !p.itemUsed ? ITEMS[p.itemId].name : (p.itemId ? '用過' : '—')), x + w - pad, y + 38);
     ctx.textAlign = 'left';
   }
 
