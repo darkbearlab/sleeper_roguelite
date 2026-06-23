@@ -132,6 +132,9 @@ const CONFIG = {
   // IDLE 巡邏（只有 type.patrols 的單位＝grunt 巡，重裝/狗守原地）。巡邏池：地圖有 patrol 標籤點(≥2)用之，否則自動取「距入口/撤離口都 ≥autoBandFromEnds」的點。
   // 認領制：每個沒目標的巡邏兵隨機認領一個未被認領的點→沿圖走→到點停 dwell 秒(緩慢掃視)→放掉再認領。點>兵＝輪換不可預測。speedMul＝巡邏走速倍率。
   patrol: { dwell: 2.0, speedMul: 0.7, autoBandFromEnds: 200 },
+  // 交戰後追蹤：KNOWN(任一敵看得到→全體共享實位、追擊) → 全員失去視線→SEARCH(最後已知位置 searchHops 步內清查，走到或視線掃過即清) → 清完沒找到→全場巡邏(全員)。
+  //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
+  hunt: { searchHops: 3, knownGrace: 0.5 },
 
   // --- 額外佔位 ---
   unitRadius: 12,
@@ -737,6 +740,7 @@ function w2s(p) {
 let players, enemies, bullets, particles;
 let controlledId, reservations, enemyIdSeq;
 let patrolClaims = new Map(), patrolPool = [];   // IDLE 巡邏：點認領集（node→enemyId）/ 本場巡邏點池
+let searchFocusNode = null, searchSet = null, searchCleared = null, searchFocusLeadT = -Infinity, searchConsumedT = -Infinity;   // 交戰後搜索焦點（最後已知位置那區）
 let simTime, reinforceTimer, extractedCount, deadCount;
 let result;
 let scene = 'MAP';           // 場景：MAP | COMBAT | REST | RUNEND | RUNWIN | EDITOR
@@ -812,6 +816,7 @@ function makePlayer(i, cfg, pos) {
     idleAnchor: 0, sweepPhase: 0, sweepDir: 1, extractNode: null,   // idleAnchor＝進入閒置時的正前方
     burstLeft: CONFIG.idleTap.size, burstCd: 0, wanderTarget: 0, wanderTimer: 0,
     stance: 'defend',   // 交戰姿態：'defend'(預設＝只對已交戰敵 overwatch) / 'engage'(對視野內任何敵 overwatch)。僅影響非附身單位自動開火
+    lastSeenPos: null, lastSeenT: -Infinity, _seenNow: false,   // 敵人共享情報：此我方最後被任一敵人看到的位置/時間
   };
 }
 function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.PI, typeId = 'grunt') {
@@ -834,6 +839,7 @@ function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.P
     detect: 0,   // 識別進度 0~1：感知到玩家時累積、滿則轉 ENGAGED（潛行空窗）
     patrols: !!TYPE.patrols,   // IDLE 是否巡邏（grunt=true；重裝/狗守原地）
     patrolTarget: null, patrolPath: null, patrolDwell: 0, patrolAnchor: facing, patrolSweepPh: 0, patrolSweepDir: 1,
+    searchTarget: null, searchPath: null,   // 交戰後失去視線時的搜索目標節點
   };
 }
 // 跨關陣容工具
@@ -892,6 +898,7 @@ function startMission() {
   // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
   for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }
   patrolPool = computePatrolPool();   // 本場巡邏點池（IDLE grunt 巡邏用）
+  searchFocusNode = null; searchSet = null; searchCleared = null; searchConsumedT = -Infinity;   // 重置交戰後搜索
   simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
   extractedCount = 0; deadCount = 0; result = null;
   scene = 'COMBAT';
@@ -929,6 +936,7 @@ function startIntro() {
   for (const d of MAP.doors) d.open = false;
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }
   reservations = new Map(); patrolClaims = new Map(); patrolPool = []; enemyIdSeq = 1; bullets = []; particles = []; drops = []; prisoners = []; corpses = [];
+  searchFocusNode = null; searchSet = null; searchCleared = null; searchConsumedT = -Infinity;
   // 主角＝players[0]（管制室，看著下方）；演出期由腳本移動，鏡頭固定，控制鎖住
   players = [makePlayer(0, introCast[0], { x: 390, y: 240 })];
   players[0].facing = Math.PI / 2; players[0].state = 'CONTROLLED'; controlledId = 0;
@@ -1630,6 +1638,52 @@ function enemyIdleTick(e, dt) {
   e.engageTimer = 0;
 }
 
+/* ---- 交戰後共享情報 + 搜索（KNOWN→SEARCH→PATROL）---- */
+function bfsWithin(start, hops) {   // 圖上 start 起 hops 步內的所有節點（含 start）
+  const dd = new Array(N).fill(-1); dd[start] = 0; const q = [start], out = [start];
+  while (q.length) { const c = q.shift(); if (dd[c] >= hops) continue; for (const nb of adj[c]) if (dd[nb] < 0) { dd[nb] = dd[c] + 1; out.push(nb); q.push(nb); } }
+  return out;
+}
+const resetSearch = () => { searchFocusNode = null; searchSet = null; searchCleared = null; };
+// 每幀算我方「被誰看到」＝共享情報；全員失去視線→以最新最後已知位置建搜索焦點、視線/走訪覆蓋清格、清光轉巡邏
+function updateThreatKnowledge() {
+  const act = activePlayers(); let anySeen = false;
+  for (const p of act) {
+    const seen = enemies.some(en => !en.dead && canSee(en, p.pos));
+    p._seenNow = seen;
+    if (seen) { p.lastSeenPos = { x: p.pos.x, y: p.pos.y }; p.lastSeenT = simTime; anySeen = true; }
+  }
+  if (anySeen) { resetSearch(); searchConsumedT = -Infinity; return; }                 // 有人看得到＝KNOWN，不搜索
+  if (!enemies.some(en => !en.dead && en.state === 'ENGAGED')) { resetSearch(); return; }  // 未交戰＝交給 IDLE 巡邏
+  let lead = null;   // 取最新、且尚未消費過的「最後已知位置」線索
+  for (const p of act) if (p.lastSeenPos && p.lastSeenT > searchConsumedT && (!lead || p.lastSeenT > lead.lastSeenT)) lead = p;
+  if (lead && searchFocusNode == null) { searchFocusNode = nearestNode(lead.lastSeenPos, false); searchSet = bfsWithin(searchFocusNode, CONFIG.hunt.searchHops); searchCleared = new Set(); searchFocusLeadT = lead.lastSeenT; }
+  if (searchSet) for (const nid of searchSet) if (!searchCleared.has(nid)) { const np = wp(nid).pos; if (enemies.some(en => !en.dead && (dist(en.pos, np) < CONFIG.nodeReach || canSee(en, np)))) searchCleared.add(nid); }   // 走到 或 視線掃過＝清格
+  if (searchFocusNode != null && searchSet && searchCleared.size >= searchSet.length) { searchConsumedT = searchFocusLeadT; resetSearch(); }   // 清光仍沒找到 → 轉全場巡邏（待新目擊才再建焦點）
+}
+function nearestKnownPlayer(pos) {   // knownGrace 內被任一敵看過的最近我方（追其「已知位置」）
+  let best = null, bd = Infinity;
+  for (const p of activePlayers()) { if (simTime - p.lastSeenT > CONFIG.hunt.knownGrace) continue; const d = dist(pos, p.lastSeenPos || p.pos); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function searchMoveTo(e, dt) {   // 走向焦點區最近的未清查節點（沿圖）
+  if (e.searchTarget == null || searchCleared.has(e.searchTarget) || searchSet.indexOf(e.searchTarget) < 0) {
+    let best = null, bd = Infinity;
+    for (const n of searchSet) if (!searchCleared.has(n)) { const d = dist(e.pos, wp(n).pos); if (d < bd) { bd = d; best = n; } }
+    e.searchTarget = best; e.searchPath = best != null ? bfsPath(e.currentNode, best) : null;
+  }
+  if (e.searchTarget == null) { patrolStep(e, dt); return; }
+  const turn = e.weapon.turnSpeed * Math.PI / 180 * dt;
+  const np = (e.searchPath && e.searchPath.length) ? wp(e.searchPath[0]).pos : wp(e.searchTarget).pos;
+  moveToward(e, np, e.moveSpeed * CONFIG.patrol.speedMul * dt);
+  e.facing = rotToward(e.facing, angTo(e.pos, np), turn);
+  if (dist(e.pos, np) < CONFIG.nodeReach) { if (e.searchPath && e.searchPath.length) e.currentNode = e.searchPath.shift(); else e.currentNode = e.searchTarget; }
+}
+function huntStep(e, dt) {   // 沒有已知目標：有焦點區→清查；否則全場巡邏（ENGAGED＝完整視野錐、看到瞬間再追）
+  if (searchFocusNode != null && searchSet && searchCleared && searchCleared.size < searchSet.length) searchMoveTo(e, dt);
+  else patrolStep(e, dt);
+}
+
 function enemyTick(e, dt) {
   const f = nearestFriendly(e.pos);
   // 識別空窗（潛行）：IDLE 時看到玩家不立刻交戰，先累積 detect；滿才 ENGAGED。快速閃過＝累不滿。
@@ -1649,10 +1703,16 @@ function enemyTick(e, dt) {
     if (e.state !== 'ENGAGED') { enemyIdleTick(e, dt); return; }   // 仍守點被動
   }
 
-  // --- ENGAGED：選點推進 / charge-hold / 開火 / 開擋路的門 ---
-  if (e.patrolTarget != null) releasePatrol(e);   // 交戰＝放掉巡邏認領（點空出給其他人輪換）
-  const seen = !!f && canSee(e, f.pos);
-  const inRange = !!f && dist(e.pos, f.pos) <= e.weapon.range;
+  // --- ENGAGED：共享情報 → KNOWN(追已知位置/親眼才開火) 或 HUNT(搜索焦點 / 全場巡邏) ---
+  const tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
+  if (!tgt) { e.engageTimer = 0; huntStep(e, dt); enemyTryOpenDoors(e); return; }   // 無已知目標＝沒人看得到 → 搜索/巡邏（修穿牆）
+  if (e.patrolTarget != null) releasePatrol(e); e.searchTarget = null; e.searchPath = null;   // 有真目標：放掉搜索/巡邏殘留
+
+  const aimPos = tgt.pos;                                   // 實際位置：視線/開火/收尾衝刺
+  const knownPos = tgt.lastSeenPos || tgt.pos;             // 已知位置：移動/選點（不穿牆作弊）
+  const fKnown = { pos: knownPos, facing: tgt.facing };
+  const seen = canSee(e, aimPos);                          // 這隻親眼看到才開火
+  const inRange = dist(e.pos, aimPos) <= e.weapon.range;
   const engaging = seen && inRange;
 
   let cands = [e.currentNode, ...adj[e.currentNode]];
@@ -1661,27 +1721,27 @@ function enemyTick(e, dt) {
 
   let best = e.currentNode, bestScore = -Infinity;
   for (const n of cands) {
-    let s = scoreNode(e, n, f, engaging);
+    let s = scoreNode(e, n, fKnown, engaging);
     if (n === e.targetNode && hysteresisOn) s += CONFIG.hysteresisBonus;
     if (s > bestScore) { bestScore = s; best = n; }
   }
   if (best !== e.targetNode) { releaseReservation(e); e.targetNode = best; commitReservation(e, best); }
 
   const tn = wp(e.targetNode);
-  // 收尾衝刺：超短射程(近戰，如警犬 fangs)單位看得到目標時，最後一段直接朝「目標本人」走（節點導航到不了咬擊距離的補完）；長射程武器 range>門檻 永不觸發
-  const goalPos = (seen && e.weapon.range <= CONFIG.enemy.meleeApproach) ? f.pos : tn.pos;
-  moveToward(e, goalPos, e.moveSpeed * dt);   // 逐類型移速（警犬快、重機槍慢）
+  // 收尾衝刺：超短射程(近戰)看得到目標時直奔本人；長射程永不觸發
+  const goalPos = (seen && e.weapon.range <= CONFIG.enemy.meleeApproach) ? aimPos : tn.pos;
+  moveToward(e, goalPos, e.moveSpeed * dt);
   if (dist(e.pos, tn.pos) < CONFIG.nodeReach) e.currentNode = e.targetNode;
 
   const turn = e.weapon.turnSpeed * Math.PI / 180 * dt;
   if (seen) {
-    const ang = angTo(e.pos, f.pos);
+    const ang = angTo(e.pos, aimPos);
     e.facing = rotToward(e.facing, ang, turn * 2);
     if (inRange) { e.engageTimer += dt; if (e.engageTimer >= CONFIG.enemy.reactionDelay) enemyAttack(e, ang, dt); }
     else e.engageTimer = 0;
   } else {
     e.engageTimer = 0;
-    e.facing = rotToward(e.facing, angTo(e.pos, watchPoint(e, f)), turn);  // 視錐朝可能的進攻路線
+    e.facing = rotToward(e.facing, angTo(e.pos, watchPoint(e, fKnown)), turn);  // 朝已知位置那側推進
   }
   enemyTryOpenDoors(e);   // 交戰中可破門追擊
 }
@@ -1954,7 +2014,8 @@ function update(dt) {
   // 2) 待機 / 撤離
   for (const p of players) { if (p.state === 'IDLE') idleTick(p, dt); else if (p.state === 'EXTRACTING') extractTick(p, dt); }
 
-  // 3) 敵人 AI
+  // 3) 敵人 AI（先更新共享情報/搜索焦點，再逐一行動）
+  updateThreatKnowledge();
   for (const e of enemies) if (!e.dead) enemyTick(e, dt);
 
   // 4) 軟計時 → 追兵
