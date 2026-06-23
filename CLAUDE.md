@@ -2,6 +2,9 @@
 
 俯視戰術射擊 × 附身式小隊操作 × Slay-the-Spire roguelite。**單一檔 `index.html`**（原生 JS + Canvas 2D、零外部相依，瀏覽器開檔即玩）。
 
+## 變體（規劃中、尚未動工）
+- `extraction_arcade/` — 2D「搜打撤」arcade 變體，將由本遊戲**複製分家**獨立維護（非共用引擎）。**目前只有設計文件 `extraction_arcade/設計規劃.md`，尚未動工**；非經使用者明確要求別開工。本目錄與 SLEEPER 主程式無關，改 index.html 時可忽略。
+
 ## 接手前先讀
 - **`開發進度與脈絡.md`** — 完整進度、架構、設計脈絡、CONFIG 對照、踩雷。**恢復實質工作前先讀這份，別重新摸索程式碼。**
 - `SLEEPER_開發計畫.md` — 原始設計規格。
