@@ -958,7 +958,7 @@ function startMission() {
 
 // 戰鬥結算：撤出者帶入後續（→回路線圖）；0 撤出則 run 結束
 function endMission() {
-  if (fromSandbox) { fromSandbox = false; forcedMap = null; sandboxLast = { extracted: players.filter(p => p.state === 'EXTRACTED').length, dead: players.filter(p => p.state === 'DEAD').length, total: players.length }; enterSandbox(); return; }
+  if (fromSandbox) { fromSandbox = false; forcedMap = null; sandboxLast = { extracted: players.filter(p => p.state === 'EXTRACTED').length, dead: players.filter(p => p.state === 'DEAD').length, total: players.length }; if (playtestMode) { playtestMode = false; try { location.href = 'editor.html'; } catch (e) {} return; } enterSandbox(); return; }
   if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
   if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
   const survivors = players.filter(p => p.state === 'EXTRACTED');
@@ -2014,7 +2014,8 @@ cv.addEventListener('click', () => {
     const id = roadNodeAt(mouse.mx, mouse.my); if (id != null) selectNode(id);
   }
   else if (scene === 'REST' || scene === 'ARMORY') restClick(mouse.mx, mouse.my);
-  else if (scene === 'RUNEND' || scene === 'RUNWIN') initRun();
+  else if (scene === 'RUNEND' || scene === 'RUNWIN') goMenu();
+  else if (scene === 'MENU') menuClick(mouse.mx, mouse.my);
   // EDITOR：互動在 mousedown/up 處理（支援拖拉），click 不處理
 });
 // 休息關：命中最後繪製（最上層）的可點區域
@@ -2100,7 +2101,8 @@ window.addEventListener('keydown', e => {
     return;
   }
   if (scene === 'ARMORY') { if (k >= '1' && k <= '9') armoryPick(parseInt(k, 10) - 1); return; }
-  if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') initRun(); return; }
+  if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') goMenu(); return; }
+  if (scene === 'MENU') return;   // 主選單以滑鼠點選
   if (scene === 'SANDBOX') return;   // 設定畫面以 DOM 表單操作，不接遊戲鍵
 
   // --- COMBAT ---
@@ -2109,7 +2111,7 @@ window.addEventListener('keydown', e => {
     if ((k === ' ' || k === 'enter') && cutscene.line) { cutscene.advance = true; e.preventDefault(); }
     return;
   }
-  if (fromSandbox && k === 'backspace') { fromSandbox = false; forcedMap = null; sandboxLast = { aborted: true }; enterSandbox(); e.preventDefault(); return; }
+  if (fromSandbox && k === 'backspace') { fromSandbox = false; forcedMap = null; sandboxLast = { aborted: true }; if (playtestMode) { playtestMode = false; try { location.href = 'editor.html'; } catch (e) {} } else enterSandbox(); e.preventDefault(); return; }
   if (fromEditor && k === 'backspace') { fromEditor = false; forcedMap = null; scene = 'EDITOR'; releasePointer(); editMsg = '已中止試玩，回到編輯器'; e.preventDefault(); return; }
   if (k >= '1' && k <= '9') {
     const i = parseInt(k, 10) - 1;
@@ -2230,6 +2232,7 @@ function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.fillStyle = CONFIG.fog.color; ctx.fillRect(0, 0, cv.width, cv.height);
 
+  if (scene === 'MENU') { drawMenu(); return; }
   if (scene === 'SANDBOX') { drawSandboxBackdrop(); return; }
   if (scene === 'MAP') { drawRoadmap(); return; }
   if (scene === 'EDITOR') { drawEditor(); return; }
@@ -3579,6 +3582,9 @@ initTunerUI();
 const SANDBOX_STORE_KEY = 'sleeper_sandbox_v1';
 const SANDBOX_WEAPON_IDS = WEAPON_IDS.filter(id => !['fangs', 'lmg', 'shotgun'].includes(id));  // 排除敵人專屬武器
 let fromSandbox = false;        // 此場由沙盒啟動（endMission 回設定而非結算/路線圖）
+let playtestMode = false;       // 由編輯器「測試戰鬥」帶圖進來：打完/離開回 editor.html
+let pendingPlaytestMap = null;  // 待填入沙盒設定的地圖 JSON 字串（編輯器帶來）
+let menuRects = [];             // 主選單可點區域
 let sandboxCfg = null;          // 上次設定（記憶 + localStorage）
 let sandboxLast = null;         // 上一場結果（撤離/陣亡）顯示用
 let sandboxEl = null, sandboxMembersEl = null, sandboxMapText = null, sandboxMapSel = null, sandboxMsgEl = null, sandboxResultEl = null, sandboxRows = [];
@@ -3600,12 +3606,43 @@ function saveSandboxCfg() {
 }
 function sandboxMsg(t) { if (sandboxMsgEl) sandboxMsgEl.textContent = t || ''; }
 
+/* ===== 主選單（進入點）：戰役 / 自由戰鬥 / 地圖編輯器 ===== */
+function goMenu() {
+  scene = 'MENU'; releasePointer();
+  if (typeof cutscene !== 'undefined') cutscene = null; introActive = false;
+  if (sandboxEl) sandboxEl.classList.remove('open');
+}
+function menuClick(x, y) { for (const r of menuRects) if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.fn(); return; } }
+function drawMenu() {
+  menuRects = [];
+  ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 54px Consolas'; ctx.fillText('SLEEPER', cv.width / 2, 150);
+  ctx.fillStyle = 'rgba(205,214,224,0.6)'; ctx.font = '15px Consolas'; ctx.fillText('俯視戰術 × 附身小隊 × roguelite', cv.width / 2, 184);
+  const items = [
+    { label: '戰役', desc: '序章 → 路線圖 run', fn: () => initRun() },
+    { label: '自由戰鬥', desc: '自選小隊 + 地圖，打一場', fn: () => enterSandbox() },
+    { label: '地圖編輯器', desc: '開啟 editor.html（可測試戰鬥）', fn: () => { try { location.href = 'editor.html'; } catch (e) {} } },
+  ];
+  const bw = 420, bh = 64, gap = 20, x = cv.width / 2 - bw / 2; let y = 250;
+  for (const it of items) {
+    const hover = mouse.mx >= x && mouse.mx <= x + bw && mouse.my >= y && mouse.my <= y + bh;
+    ctx.fillStyle = hover ? 'rgba(127,227,255,0.18)' : 'rgba(20,26,36,0.92)'; ctx.fillRect(x, y, bw, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = hover ? '#7fe3ff' : '#2a3442'; ctx.strokeRect(x, y, bw, bh);
+    ctx.textAlign = 'left'; ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 22px Consolas'; ctx.fillText(it.label, x + 22, y + 30);
+    ctx.fillStyle = 'rgba(205,214,224,0.6)'; ctx.font = '13px Consolas'; ctx.fillText(it.desc, x + 22, y + 50);
+    menuRects.push({ x, y, w: bw, h: bh, fn: it.fn });
+    y += bh + gap;
+  }
+  ctx.textAlign = 'left';
+}
+
 function enterSandbox() {
   scene = 'SANDBOX'; fromSandbox = false; releasePointer();
   if (typeof cutscene !== 'undefined') cutscene = null; introActive = false;
   if (sandboxEl) { buildSandboxForm(); sandboxEl.classList.add('open'); }
 }
-function exitSandbox() { if (sandboxEl) sandboxEl.classList.remove('open'); initRun(); }   // 離開沙盒＝回正常遊戲
+function exitSandbox() { if (sandboxEl) sandboxEl.classList.remove('open'); if (playtestMode) { playtestMode = false; try { location.href = 'editor.html'; } catch (e) {} return; } goMenu(); }   // 離開沙盒＝回主選單（playtest＝回編輯器）
 
 function sandboxStart() {
   if (!sandboxRows.length) { sandboxMsg('至少要一名隊員'); return; }
@@ -3652,6 +3689,11 @@ function buildSandboxForm() {
   const mems = (cfg && cfg.members && cfg.members.length) ? cfg.members : [defaultMember(), defaultMember(), defaultMember()];
   mems.forEach(m => addMemberRow(m));
   if (cfg) { if (typeof cfg.map === 'string') sandboxMapText.value = cfg.map; if (cfg.mapSel) sandboxMapSel.value = cfg.mapSel; }
+  if (pendingPlaytestMap) {   // 編輯器「測試戰鬥」帶來的地圖：填入並標示
+    if (sandboxMapText) sandboxMapText.value = pendingPlaytestMap;
+    if (sandboxResultEl) sandboxResultEl.textContent = '🧪 測試編輯器地圖：設定小隊→開打，結束/離開回編輯器';
+    pendingPlaytestMap = null;
+  }
   sandboxMsg('');
 }
 function initSandboxUI() {
@@ -3720,8 +3762,15 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-let __bootSandbox = false; try { __bootSandbox = typeof location !== 'undefined' && /[?&]sandbox\b/.test(location.search || ''); } catch (e) {}
-if (__bootSandbox && sandboxEl) enterSandbox(); else initRun();
+// 開機：主選單為進入點；?sandbox 直接自由戰鬥；?playtest 由編輯器帶圖進自由戰鬥設定
+function bootPlaytest() {
+  let s = null; try { s = localStorage.getItem('sleeper_playtest'); } catch (e) {}
+  if (s) { pendingPlaytestMap = s; playtestMode = true; enterSandbox(); } else goMenu();
+}
+let __q = ''; try { __q = (typeof location !== 'undefined' && location.search) || ''; } catch (e) {}
+if (/[?&]playtest\b/.test(__q)) bootPlaytest();
+else if (/[?&]sandbox\b/.test(__q) && sandboxEl) enterSandbox();
+else goMenu();
 requestAnimationFrame(frame);
 </script>
 </body>
