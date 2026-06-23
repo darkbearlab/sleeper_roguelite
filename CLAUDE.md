@@ -25,6 +25,7 @@
 - **開火現形（§4.24，修草叢隱形射手）**：敵人非消音開火 → `e.revealT=CONFIG.stealth.fireReveal`(0.6s)；`isRevealed`＝`revealT>0 || 任一我方 canSee`，`drawFog` 對 revealT>0 敵人挖洞→草叢/霧中正在開火的敵人對玩家現形（槍口火光暴露，與友軍 overwatch 一致）。
 - 潛行/警覺層（§4.19，Stage 1-5 全做完）：IDLE 敵短錐+有限視距(`canSee` 依狀態)+識別空窗(`enemy.detect` 累滿才 ENGAGED，永鎖；槍聲/被擊中瞬交戰)+overwatch 對 IDLE 收火；草叢(`MAP.bushes`/`inConceal`，MOBA 遮蔽，`drawEnemies` 依 `isRevealed`)；消音手槍(`WEAPONS.silpistol` silent，亞音速彈稀少)；望遠(右鍵 `isScoping()`，鏡頭前帶+穩定+禁奔跑，技能移空白鍵)；前哨站 `MAPS.outpost`。`CONFIG.stealth`/`scope`。
 - **每單位交戰姿態（§4.19）**：我方 `player.stance`（makePlayer 預設 `'defend'`）：`defend`＝overwatch 只打已 ENGAGED 敵(原行為)／`engage`＝打視野內任何敵(主動開戰)。`idleTick` 篩選＝`u.stance!=='engage' && e.state!=='ENGAGED' → skip`；`setStance(u,s)`。**鍵位變更：E＝engage、Q＝defend（對 controlledId 設、不奪回護送）；互動 E→F、道具 Q→C**。engage 單位頭頂紅「⚔」。
+- **開發測試架（`CONFIG.devLootRack`，預設 true、發佈前設 false）**：第0關地上陳列所有武器/道具(一般掉落)＝撿進背包→序章休息配裝；`enterRest` 背包→倉庫已支援 item/equip。`spawnDevRack`。
 - 第0關/cutscene 導演（§4.18）：`initRun` 每局先 `startIntro()`（`intro` 地圖、scene COMBAT + `cutscene` 節拍導演，可 Esc 跳）→ 序章休息 → 路線圖。通用導演 say/move/face/wait/cam/sub/do/shoot/gate 可重用於未來劇情。改 update/draw/initRun 時注意 `cutscene`/`introActive` 分支。
 - 場景：`MAP / COMBAT / REST / ARMORY / RUNEND / RUNWIN / EDITOR / SANDBOX`（有遊戲內關卡編輯器）。
 - **自訂戰鬥 SANDBOX（§4.23）**：左上「⚔ 自訂戰鬥」鈕或 `?sandbox=1`。無路線圖/演出，自選小隊(個性/武器/技能/裝備＋🎲隨機)＋貼地圖JSON或內建下拉→打一場(敵人沿用地圖 enemySpawns)。重用 startMission/endMission，靠 `fromSandbox` 路由(打完/Backspace 回設定)。`initSandboxUI`(try/catch)；設定存 `sleeper_sandbox_v1`。

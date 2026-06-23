@@ -81,6 +81,7 @@
    ===================================================================== */
 const CONFIG = {
   // --- 規格指定值 ---
+  devLootRack: true,        // 開發測試：第0關地上陳列所有武器/道具（一般掉落＝撿進背包，休息關配裝）。發佈前設 false
   switchHandoverMs: 0,      // 切換附身交接延遲（0 = 無 CD）
   idleAccuracyMult: 0.5,    // 待機精度倍率（待機基礎發散 = spreadBase / 此值，越低越散）
   idleReactionDelay: 0.4,   // 待機：看到敵人到開火的延遲 (s)
@@ -968,6 +969,7 @@ function startIntro() {
   victim.pos = { x: 320, y: 240 }; victim.facing = Math.PI / 2; victim.hp = victim.maxHp = 30;
   enemies = [victim];
   introGuards = []; introConsole = null;
+  if (CONFIG.devLootRack) spawnDevRack();   // 開發測試：第0關陳列所有武器/道具（解鎖後走過即測）
   curTimeBudget = 1e9;   // 序章不要追兵打斷敘事
   simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
   extractedCount = 0; deadCount = 0; result = null;
@@ -1136,6 +1138,8 @@ function enterRest(tutorial = false) {
   for (const it of backpack) {
     if (it.kind === 'weapon') { if (!isInfiniteAmmo(it.id)) ammoStock[it.id] = (ammoStock[it.id] || 0) + (it.ammo || 0); warehouse.push({ kind: 'weapon', id: it.id }); }
     else if (it.kind === 'ability') warehouse.push({ kind: 'ability', id: it.id });
+    else if (it.kind === 'item') warehouse.push({ kind: 'item', id: it.id });    // 撿到的道具進倉庫（休息關配到道具槽）
+    else if (it.kind === 'equip') warehouse.push({ kind: 'equip', id: it.id });   // 撿到的裝備進倉庫
   }
   backpack = [];
 }
@@ -1437,7 +1441,12 @@ function spawnDrop(u, ammo) {
   if (!LOOT_WEAPON_IDS.includes(u.weaponId)) return;   // 敵人專屬武器(fangs/lmg/shotgun)不掉落
   drops.push({ pos: { x: u.pos.x, y: u.pos.y }, kind: 'weapon', id: u.weaponId, ammo });
 }
-// 拾取：僅被附身單位走到掉落物上即撿入臨時背包（任務中不可動用＝撿/不撿的時間/暴露取捨）
+// 開發測試：第0關地上陳列各式武器(上排)與道具(下排)＝一般掉落（走過撿進背包，到休息關再配裝/使用）
+function spawnDevRack() {
+  WEAPON_IDS.forEach((id, i) => drops.push({ pos: { x: 130 + i * 80, y: 150 }, kind: 'weapon', id, ammo: CONFIG.ammo.defaultAlloc, dev: true }));
+  ITEM_IDS.forEach((id, i) => drops.push({ pos: { x: 170 + i * 150, y: 600 }, kind: 'item', id, dev: true }));   // dev＝只用於在地上標出名稱，撿取行為與一般掉落相同
+}
+// 拾取：僅被附身單位走到掉落物上即撿入臨時背包（任務中不可動用＝撿/不撿的時間/暴露取捨；到休息關處理）
 function updateDrops() {
   if (controlledId == null) return;
   const u = players[controlledId]; if (!u || u.state !== 'CONTROLLED') return;
@@ -2406,11 +2415,17 @@ function drawParticles() {
 function drawDrops() {
   const pulse = 0.6 + 0.4 * Math.sin(simTime * 6);
   for (const d of drops) {
-    const W = WEAPONS[d.id], col = rarityColor(W.rarity);
+    const isItem = d.kind === 'item';
+    const col = isItem ? '#ffd27d' : rarityColor((WEAPONS[d.id] || {}).rarity);
     ctx.globalAlpha = pulse; ctx.fillStyle = col;
     ctx.fillRect(d.pos.x - 5, d.pos.y - 5, 10, 10);
     ctx.globalAlpha = 1; ctx.strokeStyle = col; ctx.lineWidth = 1.5;
     ctx.strokeRect(d.pos.x - 7, d.pos.y - 7, 14, 14);
+    if (d.dev) {   // 開發架：標出名稱方便挑選
+      ctx.fillStyle = col; ctx.font = '9px Consolas'; ctx.textAlign = 'center';
+      ctx.fillText(isItem ? (ITEMS[d.id] ? ITEMS[d.id].name : d.id) : (WEAPONS[d.id] ? WEAPONS[d.id].name : d.id), d.pos.x, d.pos.y - 12);
+      ctx.textAlign = 'left';
+    }
   }
 }
 // 俘虜（未釋放）：青色圈 + 柵欄記號（受迷霧遮蔽，門後看不到）
