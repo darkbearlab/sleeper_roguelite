@@ -20,6 +20,7 @@
 - **開關門（§4.6）**：`openDoorsNear(e,track)` 走到關門就開（**狗 opensDoors:false 不開**）；IDLE 巡邏開路上門＋`closeDoorsBehind`(走遠且門口無人才隨手關回)；**交戰後永不關門、只開**(進 ENGAGED 清 openedDoors)；玩家自走撤離 extractTick 也開門→門＝減速帶非死牆、**softlock 解除**(免額外 waypoint)。
 - **交戰後共享情報+搜索（§4.6，修視野穿牆）**：`updateThreatKnowledge()`(每幀，enemyTick 前)算我方「被任一敵看到否」＝共享。**KNOWN**(有人看到→全體共享實位追擊、更新 `player.lastSeenPos`；ENGAGED 用 `nearestKnownPlayer`，選點吃已知位置不穿牆、開火吃實位且需本隻 canSee)→**SEARCH**(全員失視線→`searchFocusNode`=最後已知位置最近節點、`searchSet`=bfsWithin hops、走到/視線掃過清格)→**PATROL**(清光沒找到→全場 patrolStep 含重裝、待新目擊再建焦點)。`CONFIG.hunt{searchHops3,knownGrace0.5}`。
 - 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。
+- **手榴彈道具（§4.24b，不用新系統）**：`ITEMS.grenade`＝`throwGrenade` 朝 360° 噴一批 `bullets`(faction 玩家)，威力衰減＝被幾顆打中(中心密/遠處稀)、超 range 過期。pierce0 對重裝弱、近敵會擋後排。值在 ITEMS(面板可調)。
 - **視覺化聲音（§4.25，無音效替代）**：`Sfx.play(id,pos)` 給 pos→`pingSound`(`SOUND_PINGS` 表)→`soundPings`；`drawSoundEdges` 對控制角色 `!canSee` 的 ping 在畫面外框該方向畫發光（你眼前/自己的聲音不提示，背後/牆後才亮）。`CONFIG.soundEdge`。引擎級、arcade 沿用。
 - **開火現形（§4.24，修草叢隱形射手）**：敵人非消音開火 → `e.revealT=CONFIG.stealth.fireReveal`(0.6s)；`isRevealed`＝`revealT>0 || 任一我方 canSee`，`drawFog` 對 revealT>0 敵人挖洞→草叢/霧中正在開火的敵人對玩家現形（槍口火光暴露，與友軍 overwatch 一致）。
 - 潛行/警覺層（§4.19，Stage 1-5 全做完）：IDLE 敵短錐+有限視距(`canSee` 依狀態)+識別空窗(`enemy.detect` 累滿才 ENGAGED，永鎖；槍聲/被擊中瞬交戰)+overwatch 對 IDLE 收火；草叢(`MAP.bushes`/`inConceal`，MOBA 遮蔽，`drawEnemies` 依 `isRevealed`)；消音手槍(`WEAPONS.silpistol` silent，亞音速彈稀少)；望遠(右鍵 `isScoping()`，鏡頭前帶+穩定+禁奔跑，技能移空白鍵)；前哨站 `MAPS.outpost`。`CONFIG.stealth`/`scope`。
