@@ -128,7 +128,7 @@ const CONFIG = {
   //   idleConeMul＝IDLE 錐角倍率(×coneHalfDeg)；idleViewRange＝IDLE 視錐有限視距(超出只剩近身感知)。
   //   identifyTime＝識別滿值(秒@基準)；distNearMul＝貼臉(senseRadius)識別加速倍率(近乎瞬識)；
   //   concealMul＝在遮蔽區(草叢)時識別速率倍率(Stage 2 用)；decay＝失去視線後識別衰退速率。
-  stealth: { idleConeMul: 0.6, idleViewRange: 360, identifyTime: 0.8, distNearMul: 6, concealMul: 0.25, decay: 1.5 },
+  stealth: { idleConeMul: 0.6, idleViewRange: 360, identifyTime: 0.8, distNearMul: 6, concealMul: 0.25, decay: 1.5, fireReveal: 0.6 },   // fireReveal＝敵人非消音開火後對玩家現形的秒數（槍口火光暴露位置，含草叢內）
   // IDLE 巡邏（只有 type.patrols 的單位＝grunt 巡，重裝/狗守原地）。巡邏池：地圖有 patrol 標籤點(≥2)用之，否則自動取「距入口/撤離口都 ≥autoBandFromEnds」的點。
   // 認領制：每個沒目標的巡邏兵隨機認領一個未被認領的點→沿圖走→到點停 dwell 秒(緩慢掃視)→放掉再認領。點>兵＝輪換不可預測。speedMul＝巡邏走速倍率。
   patrol: { dwell: 2.0, speedMul: 0.7, autoBandFromEnds: 200 },
@@ -136,9 +136,9 @@ const CONFIG = {
   //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
   hunt: { searchHops: 3, knownGrace: 0.5 },
   // 打擊感（juice）：子彈近 hitscan(速度×mul)＋曳光、開火後座/相機踢、命中/擊殺螢幕震動、擊殺頓幀。皆可即時調。
-  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 5, shakeFire: 1.2, shakeHit: 3, shakeKill: 8, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.08,
+  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 0, shakeFire: 0, shakeHit: 0, shakeKill: 0, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.04,   // 震動先全關(camKick/shakeFire/Hit/Kill=0)、頓幀減半
     hitFlash: 0.12, flinch: 5,                                              // 受擊：閃白時長 / 後仰位移(px)
-    deathCamTime: 0.9, deathCamSlow: 0.35, deathCamZoom: 1.25, deathHitstop: 0.12 },   // 我方陣亡鏡頭：帶到死亡點+慢動作時長 / 慢動作倍率 / 拉近 / 觸發頓幀
+    deathCamTime: 0.9, deathCamSlow: 0.35, deathCamZoom: 1.25, deathHitstop: 0.06 },   // 我方陣亡鏡頭：帶到死亡點+慢動作時長 / 慢動作倍率 / 拉近 / 觸發頓幀(減半)
 
   // --- 額外佔位 ---
   unitRadius: 12,
@@ -699,7 +699,7 @@ function canSee(observer, targetPos) {
   const baseHalf = (observer.coneHalfDeg || CONFIG.vision.coneHalfDeg) * (idleEnemy ? CONFIG.stealth.idleConeMul : 1);
   return Math.abs(angDiff(angTo(observer.pos, targetPos), observer.facing)) <= baseHalf * Math.PI / 180;
 }
-function isRevealed(enemy) { return activePlayers().some(p => canSee(p, enemy.pos)); }
+function isRevealed(enemy) { return enemy.revealT > 0 || activePlayers().some(p => canSee(p, enemy.pos)); }   // 開火現形 或 被任一我方看到
 
 /* =====================================================================
    Camera — 旋轉視角（跟隨置中被附身單位、使其朝上）
@@ -851,6 +851,7 @@ function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.P
     currentNode: nodeId, targetNode: nodeId, reservedNode: null,
     fireCooldown: 0, engageTimer: 0, muzzle: 0, isReinforce, watchFacing: facing,
     detect: 0,   // 識別進度 0~1：感知到玩家時累積、滿則轉 ENGAGED（潛行空窗）
+    revealT: 0,   // 開火現形倒數：>0 時對玩家可見（即使躲草叢/在霧中）＝槍口火光暴露
     patrols: !!TYPE.patrols,   // IDLE 是否巡邏（grunt=true；重裝/狗守原地）
     patrolTarget: null, patrolPath: null, patrolDwell: 0, patrolAnchor: facing, patrolSweepPh: 0, patrolSweepDir: 1,
     searchTarget: null, searchPath: null,   // 交戰後失去視線時的搜索目標節點
@@ -1313,6 +1314,7 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
   u.fireCooldown = (1 / W.fireRate) / (fireRateMult * (u.buffFire || 1));   // 道具(腎上腺素)可加射速
   if (bloomAdd) u.bloom = Math.min(W.spreadMax, u.bloom + bloomAdd);
   u.muzzle = W.silent ? 0.02 : 0.05;
+  if (u.faction === 'enemy' && !W.silent) u.revealT = CONFIG.stealth.fireReveal;   // 敵人開火＝槍口火光暴露位置（對玩家現形，含草叢/霧中）
   u.recoil = CONFIG.juice.recoil;   // 開火後座（繪製時往後彈、快速回正）
   if (u.faction === 'player' && u.id === controlledId) { kickY += CONFIG.juice.camKick; addShakeAt(u.pos, CONFIG.juice.shakeFire); }   // 你的槍＝相機踢+微震
   Sfx.play(W.silent ? 'silshot' : (W.pellets ? 'shotgun' : 'shot'));   // 開火音效接縫
@@ -2024,7 +2026,7 @@ function update(dt) {
 
   const juiceDecay = (u) => { if (u.recoil > 0) u.recoil = Math.max(0, u.recoil - CONFIG.juice.recoilDecay * dt); if (u.hitFlash > 0) u.hitFlash -= dt; if (u.flinchX) { u.flinchX *= Math.exp(-22 * dt); u.flinchY *= Math.exp(-22 * dt); } };
   for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; juiceDecay(p); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
-  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; juiceDecay(e); tickAmmo(e, dt); }
+  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; if (e.revealT > 0) e.revealT -= dt; juiceDecay(e); tickAmmo(e, dt); }
 
   // 0) 護送 seize：護送(controlledId 指向 EXTRACTING)時，移動或開火 → 奪回手動、撤離中斷（滑鼠轉視野不算）
   if (controlledId != null && players[controlledId].state === 'EXTRACTING') {
@@ -2472,6 +2474,7 @@ function drawFog() {
       for (let i = 1; i < poly.length; i++) { const s = w2s(poly[i]); fctx.lineTo(s.x, s.y); }
       fctx.closePath(); fctx.fill();
     }
+    for (const e of enemies) if (!e.dead && e.revealT > 0) { const c = w2s(e.pos); fctx.beginPath(); fctx.arc(c.x, c.y, (e.radius + 28) * cam.scale, 0, Math.PI * 2); fctx.fill(); }   // 開火現形：在霧上挖出開火敵人（草叢內也露出）
   }
   fctx.globalCompositeOperation = 'source-over';
   ctx.drawImage(fogCanvas, 0, 0);
