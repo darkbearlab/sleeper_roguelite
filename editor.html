@@ -89,12 +89,13 @@
 
 /* ---- 與 index.html 同步的小常數（編輯器自帶一份；數量少、變動低）---- */
 const WORLD = { w: 1280, h: 720 };
-const ENEMY_TYPE_IDS = ['grunt', 'dog', 'heavy_lmg', 'heavy_shot'];
+const ENEMY_TYPE_IDS = ['grunt', 'grunt_flank', 'dog', 'heavy_lmg', 'heavy_shot'];
 const ENEMY_META = {
-  grunt:      { name: '步兵',     hue: 0,   cone: 45, range: 340 },
-  dog:        { name: '警犬',     hue: 45,  cone: 80, range: 220 },
-  heavy_lmg:  { name: '重機槍兵', hue: 280, cone: 45, range: 420 },
-  heavy_shot: { name: '霰彈兵',   hue: 200, cone: 45, range: 240 },
+  grunt:       { name: '步兵(衝鋒)', hue: 0,   cone: 45, range: 340 },
+  grunt_flank: { name: '步兵(包抄)', hue: 18,  cone: 45, range: 340 },
+  dog:         { name: '警犬',       hue: 45,  cone: 80, range: 220 },
+  heavy_lmg:   { name: '重機槍兵',   hue: 280, cone: 45, range: 420 },
+  heavy_shot:  { name: '霰彈兵',     hue: 200, cone: 45, range: 240 },
 };
 const PERSONALITIES = ['(預設)', 'rusher', 'flanker', 'holder'];
 const WP_TAGS = ['patrol', 'cover', 'flank', 'vantage', 'rush', 'choke', 'spawn'];
