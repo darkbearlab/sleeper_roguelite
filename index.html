@@ -39,6 +39,29 @@
   #tuner footer button{padding:4px 8px;background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;}
   #tuner .note{font-size:10px;color:#5a6470;padding:0 8px 6px;line-height:1.4;}
   #tuner textarea{margin:0 8px 8px;width:auto;height:120px;background:#0f141c;border:1px solid #2a3442;color:#cdd6e0;font:11px Consolas;display:none;}
+  /* === 自訂戰鬥 SANDBOX === */
+  #sandboxBtn{position:fixed;top:8px;left:10px;z-index:50;height:30px;padding:0 10px;border:1px solid #2a3442;background:rgba(16,21,29,0.8);color:#ffd27a;border-radius:6px;cursor:pointer;font:13px Consolas,monospace;}
+  #sandboxBtn:hover{background:#1a2330;}
+  #sandbox{position:fixed;inset:0;z-index:48;display:none;align-items:center;justify-content:center;background:rgba(4,6,10,0.84);}
+  #sandbox.open{display:flex;}
+  #sandbox .card{width:780px;max-width:94%;max-height:92%;overflow:auto;background:#0c1118;border:1px solid #2a3442;border-radius:10px;padding:14px 16px;color:#cdd6e0;font:12px Consolas,monospace;}
+  #sandbox h2{margin:0 0 2px;color:#ffd27a;font-size:17px;}
+  #sandbox h3{margin:12px 0 6px;color:#7fe3ff;font-size:13px;}
+  #sandbox .muted{color:#5a6470;font-size:11px;}
+  #sandbox .cols{color:#7e8a99;font-size:11px;display:flex;gap:6px;margin:2px 0;}
+  #sandbox .cols span{flex:1;}
+  #sandbox .mem{display:flex;gap:6px;align-items:center;margin:4px 0;}
+  #sandbox .mem .idx{flex:0 0 24px;color:#7e8a99;}
+  #sandbox select,#sandbox input,#sandbox textarea{background:#0f141c;border:1px solid #2a3442;color:#e0e8f0;border-radius:4px;padding:3px 5px;font:inherit;}
+  #sandbox .mem select{flex:1;min-width:80px;}
+  #sandbox textarea{width:100%;height:140px;box-sizing:border-box;}
+  #sandbox button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:5px;cursor:pointer;padding:4px 10px;font:inherit;}
+  #sandbox button:hover{background:#1d2a38;}
+  #sandbox .go{background:#243a2a;color:#bfe6cf;border-color:#3a8f5a;font-size:14px;padding:7px 18px;}
+  #sandbox .x{color:#ff9b6b;border-color:#5a3030;padding:3px 8px;}
+  #sandbox .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0;}
+  #sandbox #sbMsg{color:#ff9b6b;}
+  #sandbox #sbResult{color:#9fd0b0;}
 </style>
 </head>
 <body>
@@ -868,6 +891,7 @@ function startMission() {
 
 // 戰鬥結算：撤出者帶入後續（→回路線圖）；0 撤出則 run 結束
 function endMission() {
+  if (fromSandbox) { fromSandbox = false; forcedMap = null; sandboxLast = { extracted: players.filter(p => p.state === 'EXTRACTED').length, dead: players.filter(p => p.state === 'DEAD').length, total: players.length }; enterSandbox(); return; }
   if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
   if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
   const survivors = players.filter(p => p.state === 'EXTRACTED');
@@ -1785,6 +1809,7 @@ window.addEventListener('keydown', e => {
   }
   if (scene === 'ARMORY') { if (k >= '1' && k <= '9') armoryPick(parseInt(k, 10) - 1); return; }
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') initRun(); return; }
+  if (scene === 'SANDBOX') return;   // 設定畫面以 DOM 表單操作，不接遊戲鍵
 
   // --- COMBAT ---
   if (introActive && k === 'escape') { skipIntro(); e.preventDefault(); return; }   // 第0關：Esc 跳過演出（休息關仍進）
@@ -1792,6 +1817,7 @@ window.addEventListener('keydown', e => {
     if ((k === ' ' || k === 'enter') && cutscene.line) { cutscene.advance = true; e.preventDefault(); }
     return;
   }
+  if (fromSandbox && k === 'backspace') { fromSandbox = false; forcedMap = null; sandboxLast = { aborted: true }; enterSandbox(); e.preventDefault(); return; }
   if (fromEditor && k === 'backspace') { fromEditor = false; forcedMap = null; scene = 'EDITOR'; releasePointer(); editMsg = '已中止試玩，回到編輯器'; e.preventDefault(); return; }
   if (k >= '1' && k <= '9') {
     const i = parseInt(k, 10) - 1;
@@ -1905,6 +1931,7 @@ function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.fillStyle = CONFIG.fog.color; ctx.fillRect(0, 0, cv.width, cv.height);
 
+  if (scene === 'SANDBOX') { drawSandboxBackdrop(); return; }
   if (scene === 'MAP') { drawRoadmap(); return; }
   if (scene === 'EDITOR') { drawEditor(); return; }
   if (scene === 'REST') { drawRest(); return; }
@@ -3134,6 +3161,138 @@ function initTunerUI() {
 initTunerUI();
 
 /* =====================================================================
+   自訂戰鬥（SANDBOX）— 無路線圖/演出的純戰鬥沙盒：自選小隊 + 貼地圖 JSON 打一場。
+   重用整個戰鬥引擎（startMission/endMission），只多一個設定場景 + fromSandbox 路由。
+   進入：左上「⚔ 自訂戰鬥」鈕，或 index.html?sandbox=1。打完/Backspace 回設定可改了再打。
+   ===================================================================== */
+const SANDBOX_STORE_KEY = 'sleeper_sandbox_v1';
+const SANDBOX_WEAPON_IDS = WEAPON_IDS.filter(id => !['fangs', 'lmg', 'shotgun'].includes(id));  // 排除敵人專屬武器
+let fromSandbox = false;        // 此場由沙盒啟動（endMission 回設定而非結算/路線圖）
+let sandboxCfg = null;          // 上次設定（記憶 + localStorage）
+let sandboxLast = null;         // 上一場結果（撤離/陣亡）顯示用
+let sandboxEl = null, sandboxMembersEl = null, sandboxMapText = null, sandboxMapSel = null, sandboxMsgEl = null, sandboxResultEl = null, sandboxRows = [];
+
+const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', abilityId: 'heal', equipId: '' });
+const randomMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: rngPick(SANDBOX_WEAPON_IDS), abilityId: rngPick(ABILITY_IDS), equipId: rngPick(['', ...EQUIP_IDS]) });
+function makeSandboxMember(m, used) {
+  const r = makeRecruit(used);
+  if (m.archetypeId && ARCHETYPES[m.archetypeId]) r.archetypeId = m.archetypeId;
+  if (m.weaponId && WEAPONS[m.weaponId]) r.weaponId = m.weaponId;
+  if (m.abilityId && ABILITIES[m.abilityId]) r.abilityId = m.abilityId;
+  r.equipId = (m.equipId && EQUIPMENT[m.equipId]) ? m.equipId : null;
+  return r;
+}
+function loadSandboxCfg() { try { return JSON.parse(localStorage.getItem(SANDBOX_STORE_KEY) || 'null'); } catch (e) { return null; } }
+function saveSandboxCfg() {
+  const cfg = { members: sandboxRows.map(r => ({ archetypeId: r.archetype.value, weaponId: r.weapon.value, abilityId: r.ability.value, equipId: r.equip.value })), map: (sandboxMapText ? sandboxMapText.value : '').trim(), mapSel: sandboxMapSel ? sandboxMapSel.value : 'alpha' };
+  sandboxCfg = cfg; try { localStorage.setItem(SANDBOX_STORE_KEY, JSON.stringify(cfg)); } catch (e) {}
+}
+function sandboxMsg(t) { if (sandboxMsgEl) sandboxMsgEl.textContent = t || ''; }
+
+function enterSandbox() {
+  scene = 'SANDBOX'; fromSandbox = false; releasePointer();
+  if (typeof cutscene !== 'undefined') cutscene = null; introActive = false;
+  if (sandboxEl) { buildSandboxForm(); sandboxEl.classList.add('open'); }
+}
+function exitSandbox() { if (sandboxEl) sandboxEl.classList.remove('open'); initRun(); }   // 離開沙盒＝回正常遊戲
+
+function sandboxStart() {
+  if (!sandboxRows.length) { sandboxMsg('至少要一名隊員'); return; }
+  let mapObj = null; const txt = (sandboxMapText.value || '').trim();
+  if (txt) { try { mapObj = JSON.parse(txt); } catch (e) { sandboxMsg('地圖 JSON 解析失敗：' + e.message); return; } }
+  else mapObj = JSON.parse(JSON.stringify(MAPS[sandboxMapSel.value] || MAPS.alpha));
+  if (!mapObj || typeof mapObj !== 'object') { sandboxMsg('地圖無效'); return; }
+  MAPS.__sandbox = normalizeForPlay(mapObj);
+  const used = new Set();
+  roster = sandboxRows.map(r => makeSandboxMember({ archetypeId: r.archetype.value, weaponId: r.weapon.value, abilityId: r.ability.value, equipId: r.equip.value || null }, used));
+  missionIndex = 0; roadCurrent = null; introActive = false; cutscene = null; introGuards = []; introConsole = null;
+  forcedMap = '__sandbox'; fromSandbox = true; saveSandboxCfg();
+  if (sandboxEl) sandboxEl.classList.remove('open');
+  startMission();
+}
+
+// ── 表單建構（DOM，全包 try/catch；無 DOM 環境停用）──
+function sbSelect(ids, val, labelFn, noneText) {
+  const s = document.createElement('select');
+  if (noneText) { const o = document.createElement('option'); o.value = ''; o.textContent = noneText; s.appendChild(o); }
+  ids.forEach(id => { const o = document.createElement('option'); o.value = id; o.textContent = labelFn(id); s.appendChild(o); });
+  if (val != null) s.value = val; return s;
+}
+function addMemberRow(m) {
+  m = m || defaultMember();
+  const row = document.createElement('div'); row.className = 'mem';
+  const idx = document.createElement('span'); idx.className = 'idx'; row.appendChild(idx);
+  const a = sbSelect(ARCHETYPE_IDS, m.archetypeId, id => ARCHETYPES[id].name);
+  const w = sbSelect(SANDBOX_WEAPON_IDS, m.weaponId, id => WEAPONS[id].name);
+  const k = sbSelect(ABILITY_IDS, m.abilityId, id => ABILITIES[id].name);
+  const e = sbSelect(EQUIP_IDS, m.equipId || '', id => EQUIPMENT[id].name, '(無裝備)');
+  const del = document.createElement('button'); del.className = 'x'; del.textContent = '✕';
+  const rec = { archetype: a, weapon: w, ability: k, equip: e, row };
+  del.addEventListener('click', () => { const i = sandboxRows.indexOf(rec); if (i >= 0) sandboxRows.splice(i, 1); row.remove(); renumberMembers(); });
+  row.appendChild(a); row.appendChild(w); row.appendChild(k); row.appendChild(e); row.appendChild(del);
+  sandboxMembersEl.appendChild(row); sandboxRows.push(rec); renumberMembers();
+}
+function renumberMembers() { sandboxRows.forEach((r, i) => { const idx = r.row.querySelector('.idx'); if (idx) idx.textContent = '#' + (i + 1); }); }
+function buildSandboxForm() {
+  if (!sandboxEl || !sandboxMembersEl) return;
+  if (sandboxResultEl) sandboxResultEl.textContent = !sandboxLast ? '' : sandboxLast.aborted ? '上一場：已中止' : `上一場結果：撤離 ${sandboxLast.extracted} / 陣亡 ${sandboxLast.dead}（共 ${sandboxLast.total}）`;
+  sandboxMembersEl.innerHTML = ''; sandboxRows = [];
+  const cfg = sandboxCfg || loadSandboxCfg();
+  const mems = (cfg && cfg.members && cfg.members.length) ? cfg.members : [defaultMember(), defaultMember(), defaultMember()];
+  mems.forEach(m => addMemberRow(m));
+  if (cfg) { if (typeof cfg.map === 'string') sandboxMapText.value = cfg.map; if (cfg.mapSel) sandboxMapSel.value = cfg.mapSel; }
+  sandboxMsg('');
+}
+function initSandboxUI() {
+  try {
+    if (typeof document === 'undefined' || !document.body || !document.createElement) return;
+    const btn = document.createElement('button'); btn.id = 'sandboxBtn'; btn.textContent = '⚔ 自訂戰鬥'; btn.title = '純戰鬥沙盒（無路線圖/演出）';
+    btn.addEventListener('click', () => enterSandbox()); document.body.appendChild(btn);
+
+    const ov = document.createElement('div'); ov.id = 'sandbox';
+    const card = document.createElement('div'); card.className = 'card'; ov.appendChild(card);
+    const h2 = document.createElement('h2'); h2.textContent = '自訂戰鬥 (SANDBOX)'; card.appendChild(h2);
+    const sub = document.createElement('div'); sub.className = 'muted'; sub.textContent = '自選小隊 + 地圖，打一場。敵人沿用地圖的 enemySpawns。無路線圖、無演出。'; card.appendChild(sub);
+    sandboxResultEl = document.createElement('div'); sandboxResultEl.id = 'sbResult'; sandboxResultEl.style.margin = '4px 0'; card.appendChild(sandboxResultEl);
+
+    const h3a = document.createElement('h3'); h3a.textContent = '小隊'; card.appendChild(h3a);
+    const cols = document.createElement('div'); cols.className = 'cols'; ['　', '個性', '武器', '技能', '裝備', '　'].forEach(t => { const s = document.createElement('span'); s.textContent = t; cols.appendChild(s); }); card.appendChild(cols);
+    sandboxMembersEl = document.createElement('div'); card.appendChild(sandboxMembersEl);
+    const r1 = document.createElement('div'); r1.className = 'row';
+    const addBtn = document.createElement('button'); addBtn.textContent = '＋ 新增隊員'; addBtn.addEventListener('click', () => addMemberRow());
+    const cnt = document.createElement('input'); cnt.type = 'number'; cnt.value = 3; cnt.min = 1; cnt.max = 8; cnt.style.width = '48px';
+    const rnd = document.createElement('button'); rnd.textContent = '🎲 隨機小隊'; rnd.addEventListener('click', () => { const n = Math.max(1, Math.min(8, +cnt.value || 3)); sandboxMembersEl.innerHTML = ''; sandboxRows = []; for (let i = 0; i < n; i++) addMemberRow(randomMember()); });
+    r1.appendChild(addBtn); r1.appendChild(rnd); r1.appendChild(cnt); r1.appendChild(document.createTextNode('人')); card.appendChild(r1);
+
+    const h3b = document.createElement('h3'); h3b.textContent = '地圖'; card.appendChild(h3b);
+    const r2 = document.createElement('div'); r2.className = 'row';
+    sandboxMapSel = document.createElement('select'); ['alpha', 'bravo', 'outpost', 'lanes'].forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k + '（' + (MAPS[k] ? MAPS[k].label : k) + '）'; sandboxMapSel.appendChild(o); });
+    const fill = document.createElement('button'); fill.textContent = '↧ 載入此內建到下方'; fill.addEventListener('click', () => { sandboxMapText.value = JSON.stringify(MAPS[sandboxMapSel.value], null, 2); });
+    const mhint = document.createElement('span'); mhint.className = 'muted'; mhint.textContent = '下方空白＝用左側內建；貼上 JSON＝用貼上的';
+    r2.appendChild(sandboxMapSel); r2.appendChild(fill); r2.appendChild(mhint); card.appendChild(r2);
+    sandboxMapText = document.createElement('textarea'); sandboxMapText.placeholder = '貼上地圖 JSON（編輯器「匯出 → 純 JSON」），留空則用上方內建地圖'; card.appendChild(sandboxMapText);
+
+    const r3 = document.createElement('div'); r3.className = 'row';
+    const go = document.createElement('button'); go.className = 'go'; go.textContent = '▶ 開打'; go.addEventListener('click', () => sandboxStart());
+    const leave = document.createElement('button'); leave.textContent = '離開（回正常遊戲）'; leave.addEventListener('click', () => exitSandbox());
+    sandboxMsgEl = document.createElement('span'); sandboxMsgEl.id = 'sbMsg';
+    r3.appendChild(go); r3.appendChild(leave); r3.appendChild(sandboxMsgEl); card.appendChild(r3);
+    const note = document.createElement('div'); note.className = 'muted'; note.textContent = '開打後點畫面鎖定滑鼠開始。打完（全員撤離/陣亡）或按 Backspace 會回到本設定，改了再打。按 ` 可開數值面板。'; card.appendChild(note);
+
+    document.body.appendChild(ov); sandboxEl = ov; sandboxCfg = loadSandboxCfg();
+  } catch (e) { sandboxEl = null; }
+}
+initSandboxUI();
+
+function drawSandboxBackdrop() {
+  ctx.fillStyle = '#06080d'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = '#1a2230'; ctx.font = 'bold 30px Consolas'; ctx.textAlign = 'center';
+  ctx.fillText('自訂戰鬥 (SANDBOX)', cv.width / 2, cv.height / 2 - 12);
+  ctx.fillStyle = '#39414f'; ctx.font = '14px Consolas'; ctx.fillText('在上方面板設定小隊與地圖，按「開打」', cv.width / 2, cv.height / 2 + 22);
+  ctx.textAlign = 'left';
+}
+
+/* =====================================================================
    Main loop
    ===================================================================== */
 const FIXED = 1 / 60;
@@ -3147,7 +3306,8 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-initRun();
+let __bootSandbox = false; try { __bootSandbox = typeof location !== 'undefined' && /[?&]sandbox\b/.test(location.search || ''); } catch (e) {}
+if (__bootSandbox && sandboxEl) enterSandbox(); else initRun();
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -15,7 +15,8 @@
 - 側翼/突襲（§4.17，敵我皆適用）：繞背(目標視野錐外)＝傷害×2 且無視所有裝甲；閒置敵正面＝×1.5；`damageUnit` 第4參 `fromAng`。
 - 潛行/警覺層（§4.19，Stage 1-5 全做完）：IDLE 敵短錐+有限視距(`canSee` 依狀態)+識別空窗(`enemy.detect` 累滿才 ENGAGED，永鎖；槍聲/被擊中瞬交戰)+overwatch 對 IDLE 收火；草叢(`MAP.bushes`/`inConceal`，MOBA 遮蔽，`drawEnemies` 依 `isRevealed`)；消音手槍(`WEAPONS.silpistol` silent，亞音速彈稀少)；望遠(右鍵 `isScoping()`，鏡頭前帶+穩定+禁奔跑，技能移空白鍵)；前哨站 `MAPS.outpost`。`CONFIG.stealth`/`scope`。
 - 第0關/cutscene 導演（§4.18）：`initRun` 每局先 `startIntro()`（`intro` 地圖、scene COMBAT + `cutscene` 節拍導演，可 Esc 跳）→ 序章休息 → 路線圖。通用導演 say/move/face/wait/cam/sub/do/shoot/gate 可重用於未來劇情。改 update/draw/initRun 時注意 `cutscene`/`introActive` 分支。
-- 場景：`MAP / COMBAT / REST / ARMORY / RUNEND / RUNWIN / EDITOR`（有遊戲內關卡編輯器）。
+- 場景：`MAP / COMBAT / REST / ARMORY / RUNEND / RUNWIN / EDITOR / SANDBOX`（有遊戲內關卡編輯器）。
+- **自訂戰鬥 SANDBOX（§4.23）**：左上「⚔ 自訂戰鬥」鈕或 `?sandbox=1`。無路線圖/演出，自選小隊(個性/武器/技能/裝備＋🎲隨機)＋貼地圖JSON或內建下拉→打一場(敵人沿用地圖 enemySpawns)。重用 startMission/endMission，靠 `fromSandbox` 路由(打完/Backspace 回設定)。`initSandboxUI`(try/catch)；設定存 `sleeper_sandbox_v1`。
 - 完成的更新都 commit + push 到 GitHub `darkbearlab/sleeper_roguelite`（git 認證走系統 Git Credential Manager）。
 - 改完一定要驗證：抽出 `<script>` 丟 Node `vm`、stub 掉 DOM/canvas/pointerlock/**localStorage**，**逐幀跑遍所有場景的 `update()+draw()`**（不要只在戰鬥跑）。
 - 必踩雷：① `update()` 必須先判 `scene!=='COMBAT'` 再碰 `cam/players`（非戰鬥場景未建立）。② 迷霧用離屏 canvas 遮罩，**不可在主畫布 `destination-out`**（會擦掉世界）。③ `MAP` 已非單一 const 而是 registry 的作用中指標：衍生表(`N/adj/nodeVis/nextHop/EXTRACT/ENTRY`)由 `buildMapDerived(key)` 重建，別假設它們是載入期常數。
