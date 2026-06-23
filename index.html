@@ -135,6 +135,8 @@ const CONFIG = {
   // 交戰後追蹤：KNOWN(任一敵看得到→全體共享實位、追擊) → 全員失去視線→SEARCH(最後已知位置 searchHops 步內清查，走到或視線掃過即清) → 清完沒找到→全場巡邏(全員)。
   //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
   hunt: { searchHops: 3, knownGrace: 0.5 },
+  // 打擊感（juice）：子彈近 hitscan(速度×mul)＋曳光、開火後座/相機踢、命中/擊殺螢幕震動、擊殺頓幀。皆可即時調。
+  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 5, shakeFire: 1.2, shakeHit: 3, shakeKill: 8, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.08 },
 
   // --- 額外佔位 ---
   unitRadius: 12,
@@ -702,6 +704,10 @@ function isRevealed(enemy) { return activePlayers().some(p => canSee(p, enemy.po
    ===================================================================== */
 let cam, camTarget;
 let camAnchorY = CONFIG.camera.anchorY;   // 現用畫面錨點縱比（望遠時 lerp 往下＝看更前方）
+// 打擊感：螢幕震動/相機踢/頓幀（皆螢幕空間，套用在 applyCam+w2s 的錨點上）
+let shakeAmt = 0, shakeX = 0, shakeY = 0, kickY = 0, hitstopT = 0;
+function addShakeAt(pos, amt) { if (!cam) return; const f = clamp(1 - dist(pos, cam) / 700, 0, 1); shakeAmt = Math.min(CONFIG.juice.shakeMax, shakeAmt + amt * f); }   // 依離相機遠近衰減＝遠處交火不晃爆
+function hitstop(t) { if (t > hitstopT) hitstopT = t; }
 let scopeHeld = false, scopeToggled = false;   // 望遠：按住 / 切換(留 toggle 鉤子)
 const isScoping = () => (CONFIG.scope.toggle ? scopeToggled : scopeHeld) && scene === 'COMBAT' && controlledId != null && players[controlledId] && players[controlledId].state === 'CONTROLLED';
 function initCamera(f) {
@@ -731,7 +737,7 @@ function updateCamera(dt) {
 }
 function w2s(p) {
   const ux = p.x - cam.x, uy = p.y - cam.y, c = Math.cos(cam.angle), s = Math.sin(cam.angle);
-  return { x: cv.width / 2 + (ux * c - uy * s) * cam.scale, y: cv.height * camAnchorY + (ux * s + uy * c) * cam.scale };
+  return { x: cv.width / 2 + shakeX + (ux * c - uy * s) * cam.scale, y: cv.height * camAnchorY + shakeY + (ux * s + uy * c) * cam.scale };
 }
 
 /* =====================================================================
@@ -1289,7 +1295,7 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
     const a = angle + (Math.random() * 2 - 1) * spreadDeg * (u.spreadMul || 1) * Math.PI / 180;   // 裝備(穩定器)可降發散
     bullets.push({
       x: u.pos.x + Math.cos(angle) * (u.radius + 2), y: u.pos.y + Math.sin(angle) * (u.radius + 2),
-      vx: Math.cos(a) * W.projSpeed, vy: Math.sin(a) * W.projSpeed,
+      vx: Math.cos(a) * W.projSpeed * CONFIG.juice.bulletSpeedMul, vy: Math.sin(a) * W.projSpeed * CONFIG.juice.bulletSpeedMul,   // 近 hitscan（碰撞已是掃描式、不穿透）
       dmg: W.damage, faction: u.faction, range: W.range, traveled: 0,
       ox: u.pos.x, oy: u.pos.y,   // 發射原點（低矮牆「貼牆可越射」判定用）
       pierce: W.pierce || 0,      // 穿甲：對裝甲敵人的擋格率衰減
@@ -1299,6 +1305,8 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
   u.fireCooldown = (1 / W.fireRate) / (fireRateMult * (u.buffFire || 1));   // 道具(腎上腺素)可加射速
   if (bloomAdd) u.bloom = Math.min(W.spreadMax, u.bloom + bloomAdd);
   u.muzzle = W.silent ? 0.02 : 0.05;
+  u.recoil = CONFIG.juice.recoil;   // 開火後座（繪製時往後彈、快速回正）
+  if (u.faction === 'player' && u.id === controlledId) { kickY += CONFIG.juice.camKick; addShakeAt(u.pos, CONFIG.juice.shakeFire); }   // 你的槍＝相機踢+微震
   Sfx.play(W.silent ? 'silshot' : (W.pellets ? 'shotgun' : 'shot'));   // 開火音效接縫
   if (u.ammoInMag <= 0) startReload(u);
   if (u.faction === 'player' && !W.silent) alertEnemiesNear(u.pos);   // 槍聲：驚動聽覺半徑內的閒置敵人；消音武器＝不發槍聲
@@ -1373,10 +1381,12 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
   u.hp -= dmg * mult * (1 - resist);
   if (u.faction === 'player') u.alertTimer = CONFIG.ghostAlertTime;
   if (flanked || surprise) spawnCrit(u.pos); else spawnHit(u.pos);   // 繞背/突襲命中＝不同火花
+  addShakeAt(u.pos, (flanked || surprise) ? CONFIG.juice.shakeHit * 1.6 : CONFIG.juice.shakeHit);   // 命中震動（依離相機衰減）
   if (u.hp <= 0) killUnit(u);
 }
 function killUnit(u) {
   spawnDeath(u.pos);
+  hitstop(CONFIG.juice.hitstopKill); addShakeAt(u.pos, CONFIG.juice.shakeKill);   // 擊殺：頓幀 + 較大震動
   corpses.push({ x: u.pos.x, y: u.pos.y, enemy: u.faction === 'enemy' });   // 地上留陣亡叉叉（整場保留）
   if (u.faction === 'enemy') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); releasePatrol(u); }
   else {
@@ -1993,10 +2003,11 @@ function update(dt) {
   if (!Input.locked) return;        // 戰鬥：滑鼠鎖定後才開始/繼續推進（未鎖定＝暫停）
   if (cutscene) cutsceneTick(dt);   // 第0關演出導演（推進節拍）
   updateCamera(dt);
+  shakeAmt = Math.max(0, shakeAmt - CONFIG.juice.shakeDecay * dt); kickY *= Math.exp(-CONFIG.juice.shakeDecay * dt);   // 震動/相機踢衰減
   if (cutscene && cutscene.lock) return;   // 演出鎖控制：只跑鏡頭/演出，不跑常規 sim
 
-  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
-  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; tickAmmo(e, dt); }
+  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; if (p.recoil > 0) p.recoil = Math.max(0, p.recoil - CONFIG.juice.recoilDecay * dt); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
+  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; if (e.recoil > 0) e.recoil = Math.max(0, e.recoil - CONFIG.juice.recoilDecay * dt); tickAmmo(e, dt); }
 
   // 0) 護送 seize：護送(controlledId 指向 EXTRACTING)時，移動或開火 → 奪回手動、撤離中斷（滑鼠轉視野不算）
   if (controlledId != null && players[controlledId].state === 'EXTRACTING') {
@@ -2076,9 +2087,10 @@ function update(dt) {
    Render — 旋轉視角 + 戰爭迷霧
    ===================================================================== */
 const hsl = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
-function applyCam() { ctx.translate(cv.width / 2, cv.height * camAnchorY); ctx.rotate(cam.angle); ctx.scale(cam.scale, cam.scale); ctx.translate(-cam.x, -cam.y); }
+function applyCam() { ctx.translate(cv.width / 2 + shakeX, cv.height * camAnchorY + shakeY); ctx.rotate(cam.angle); ctx.scale(cam.scale, cam.scale); ctx.translate(-cam.x, -cam.y); }
 
 function draw() {
+  shakeX = 0; shakeY = 0;
   ctx.clearRect(0, 0, cv.width, cv.height);
   ctx.fillStyle = CONFIG.fog.color; ctx.fillRect(0, 0, cv.width, cv.height);
 
@@ -2092,6 +2104,9 @@ function draw() {
 
   // 鎖定滑鼠前＝黑螢幕（不洩漏場面、不破壞氣氛；全關卡適用，含第0關）
   if (!Input.locked) { drawCombatStart(); return; }
+
+  // 打擊感：本幀螢幕震動偏移（隨機抖 + 相機踢；套用於 applyCam/w2s 錨點）
+  shakeX = (Math.random() * 2 - 1) * shakeAmt; shakeY = (Math.random() * 2 - 1) * shakeAmt + kickY;
 
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
@@ -2284,11 +2299,18 @@ function drawZonesWorld() {
   ctx.beginPath(); ctx.arc(ENTRY.x, ENTRY.y, 22, 0, Math.PI * 2); ctx.stroke();
 }
 function drawBullets() {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
   for (const b of bullets) {
-    ctx.strokeStyle = b.faction === 'player' ? '#7fe3ff' : '#ff9b5a'; ctx.lineWidth = 2.5;
-    const len = 7, l = Math.hypot(b.vx, b.vy) || 1;
-    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.x - b.vx / l * len, b.y - b.vy / l * len); ctx.stroke();
+    const l = Math.hypot(b.vx, b.vy) || 1;
+    const len = clamp(l * 0.045 * CONFIG.juice.tracer, 16, 160);            // 曳光長度隨速度
+    const tx = b.x - b.vx / l * len, ty = b.y - b.vy / l * len;
+    const col = b.faction === 'player' ? '127,227,255' : '255,150,80';
+    const g = ctx.createLinearGradient(tx, ty, b.x, b.y);
+    g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(1, `rgba(${col},0.9)`);
+    ctx.strokeStyle = g; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.fillStyle = `rgba(${col},1)`; ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, Math.PI * 2); ctx.fill();   // 亮頭
   }
+  ctx.restore();
 }
 function drawParticles() {
   for (const q of particles) { ctx.globalAlpha = Math.max(0, q.life / q.max); ctx.fillStyle = q.col; ctx.fillRect(q.x - 1.5, q.y - 1.5, 3, 3); }
@@ -2318,12 +2340,25 @@ function drawPrisoners() {
   }
 }
 function drawUnitBody(u, fill, ringColor, ringW) {
+  const rec = u.recoil || 0, cx = u.pos.x - Math.cos(u.facing) * rec, cy = u.pos.y - Math.sin(u.facing) * rec;   // 後座：繪製往後彈（不動實際座標）
   ctx.strokeStyle = ringColor; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(u.pos.x, u.pos.y);
-  ctx.lineTo(u.pos.x + Math.cos(u.facing) * (u.radius + 8), u.pos.y + Math.sin(u.facing) * (u.radius + 8)); ctx.stroke();
-  ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(u.pos.x, u.pos.y, u.radius, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = ringColor; ctx.lineWidth = ringW; ctx.beginPath(); ctx.arc(u.pos.x, u.pos.y, u.radius, 0, Math.PI * 2); ctx.stroke();
-  if (u.muzzle > 0) { ctx.fillStyle = 'rgba(255,230,150,0.9)'; ctx.beginPath(); ctx.arc(u.pos.x + Math.cos(u.facing) * (u.radius + 4), u.pos.y + Math.sin(u.facing) * (u.radius + 4), 4, 0, Math.PI * 2); ctx.fill(); }
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(u.facing) * (u.radius + 8), cy + Math.sin(u.facing) * (u.radius + 8)); ctx.stroke();
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(cx, cy, u.radius, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = ringColor; ctx.lineWidth = ringW; ctx.beginPath(); ctx.arc(cx, cy, u.radius, 0, Math.PI * 2); ctx.stroke();
+  if (u.muzzle > 0) {   // 槍口閃焰：徑向亮焰 + 短光錐（加色疊加）
+    const a = clamp(u.muzzle / 0.05, 0, 1), bx = cx + Math.cos(u.facing) * (u.radius + 5), by = cy + Math.sin(u.facing) * (u.radius + 5);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const rad = 6 + 12 * a, g = ctx.createRadialGradient(bx, by, 0, bx, by, rad);
+    g.addColorStop(0, `rgba(255,240,190,${0.95 * a})`); g.addColorStop(0.5, `rgba(255,180,70,${0.5 * a})`); g.addColorStop(1, 'rgba(255,140,40,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(bx, by, rad, 0, Math.PI * 2); ctx.fill();
+    const tip = u.radius + 5 + 16 * a, sp = 6 * a;
+    ctx.fillStyle = `rgba(255,230,150,${0.5 * a})`; ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(u.facing) * u.radius, cy + Math.sin(u.facing) * u.radius);
+    ctx.lineTo(cx + Math.cos(u.facing) * tip - Math.sin(u.facing) * sp, cy + Math.sin(u.facing) * tip + Math.cos(u.facing) * sp);
+    ctx.lineTo(cx + Math.cos(u.facing) * tip + Math.sin(u.facing) * sp, cy + Math.sin(u.facing) * tip - Math.cos(u.facing) * sp);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
 }
 function drawPlayers() {
   for (const p of players) {
@@ -3455,8 +3490,8 @@ let acc = 0, last = performance.now();
 function frame(now) {
   let delta = (now - last) / 1000; last = now;
   if (delta > 0.25) delta = 0.25;
-  acc += delta;
-  while (acc >= FIXED) { update(FIXED); acc -= FIXED; }
+  if (hitstopT > 0) { hitstopT -= delta; }          // 頓幀：凍結模擬、畫面續繪（不快轉補回）
+  else { acc += delta; while (acc >= FIXED) { update(FIXED); acc -= FIXED; } }
   draw();
   requestAnimationFrame(frame);
 }
