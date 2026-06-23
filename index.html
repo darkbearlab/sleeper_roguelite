@@ -135,7 +135,7 @@ const CONFIG = {
   patrol: { dwell: 2.0, speedMul: 0.7, autoBandFromEnds: 200 },
   // 交戰後追蹤：KNOWN(任一敵看得到→全體共享實位、追擊) → 全員失去視線→SEARCH(最後已知位置 searchHops 步內清查，走到或視線掃過即清) → 清完沒找到→全場巡邏(全員)。
   //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
-  hunt: { searchHops: 3, knownGrace: 0.5 },
+  hunt: { searchHops: 3, knownGrace: 0.5, threatGrace: 4, threatShareRadius: 240, threatDist: 320 },   // 被擊中來向脅威：記憶秒數 / 近隣傳播半徑 / 沿來向放置脅威點的距離
   // 打擊感（juice）：子彈近 hitscan(速度×mul)＋曳光、開火後座/相機踢、命中/擊殺螢幕震動、擊殺頓幀。皆可即時調。
   juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 0, shakeFire: 0, shakeHit: 0, shakeKill: 0, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.04,   // 震動先全關(camKick/shakeFire/Hit/Kill=0)、頓幀減半
     hitFlash: 0.12, flinch: 5,                                              // 受擊：閃白時長 / 後仰位移(px)
@@ -863,6 +863,7 @@ function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.P
     patrols: !!TYPE.patrols,   // IDLE 是否巡邏（grunt=true；重裝/狗守原地）
     patrolTarget: null, patrolPath: null, patrolDwell: 0, patrolAnchor: facing, patrolSweepPh: 0, patrolSweepDir: 1,
     searchTarget: null, searchPath: null,   // 交戰後失去視線時的搜索目標節點
+    threatPos: null, threatT: -Infinity,     // 被擊中「來向」的局部脅威記憶（看得到被擊中者的敵＋近隣才共享；只給方向、非全體 lastSeen）
     opensDoors: TYPE.opensDoors !== false,   // 是否會操作門（狗＝false）
     openedDoors: null,                        // 巡邏期自己開過、待走遠後關回的門 id 清單
   };
@@ -1460,6 +1461,7 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
   const mult = flanked ? CONFIG.flank.flankMult : (surprise ? CONFIG.flank.surpriseMult : 1);  // 取較高、不相乘
   if (u.faction === 'enemy') {
     u.state = 'ENGAGED';   // 被攻擊（即使被甲擋下）也進入交戰（latch）
+    if (fromAng != null) registerHitThreat(u, fromAng);   // 被擊中→把「來向」當局部脅威傳給：本人＋看得到本人的敵＋近隣（解側翼魚貫＝後續的人出來就朝來向）
     if (!flanked && u.armor > 0 && Math.random() < u.armor * (1 - pierce)) { spawnBlock(u.pos); return; }   // 裝甲：整發擋下非穿甲（繞背無視）
   }
   const resist = flanked ? 0 : (u.dmgResist || 0);   // 繞背無視所有裝甲（含玩家固定減傷＝甲只罩正面）
@@ -1789,6 +1791,16 @@ function updateThreatKnowledge() {
   if (searchSet) for (const nid of searchSet) if (!searchCleared.has(nid)) { const np = wp(nid).pos; if (enemies.some(en => !en.dead && (dist(en.pos, np) < CONFIG.nodeReach || canSee(en, np)))) searchCleared.add(nid); }   // 走到 或 視線掃過＝清格
   if (searchFocusNode != null && searchSet && searchCleared.size >= searchSet.length) { searchConsumedT = searchFocusLeadT; resetSearch(); }   // 清光仍沒找到 → 轉全場巡邏（待新目擊才再建焦點）
 }
+// 被擊中來向＝局部脅威：在「被擊中者→射手」方位上放一個脅威點，傳給被擊中者本人、看得到他的敵、與近隣的敵（皆轉 ENGAGED）。
+// 只給「方向」(非全體共享 lastSeenPos)＝解「側翼成功後敵人魚貫而出、全程面向前方被側射」：後續的人一出來就朝來向、會回頭找你。
+function registerHitThreat(victim, fromAng) {
+  const D = CONFIG.hunt.threatDist;
+  const tp = { x: victim.pos.x + Math.cos(fromAng) * D, y: victim.pos.y + Math.sin(fromAng) * D };   // fromAng 已是「被擊中者→射手」方位
+  const give = (e) => { e.threatPos = { x: tp.x, y: tp.y }; e.threatT = simTime; if (e.state !== 'ENGAGED') e.state = 'ENGAGED'; };
+  give(victim);
+  const R = CONFIG.hunt.threatShareRadius;
+  for (const o of enemies) { if (o.dead || o === victim) continue; if (dist(o.pos, victim.pos) <= R || canSee(o, victim.pos)) give(o); }
+}
 function nearestKnownPlayer(pos) {   // knownGrace 內被任一敵看過的最近我方（追其「已知位置」）
   let best = null, bd = Infinity;
   for (const p of activePlayers()) { if (simTime - p.lastSeenT > CONFIG.hunt.knownGrace) continue; const d = dist(pos, p.lastSeenPos || p.pos); if (d < bd) { bd = d; best = p; } }
@@ -1833,8 +1845,10 @@ function enemyTick(e, dt) {
 
   // --- ENGAGED：共享情報 → KNOWN(追已知位置/親眼才開火) 或 HUNT(搜索焦點 / 全場巡邏) ---
   if (e.openedDoors) e.openedDoors = null;   // 交戰後永不關門（清掉巡邏期的待關清單）
-  const tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
-  if (!tgt) { e.engageTimer = 0; huntStep(e, dt); openDoorsNear(e, false); return; }   // 無已知目標＝沒人看得到 → 搜索/巡邏（只開不關）
+  let tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
+  let threatOnly = false;   // 無全體已知目標、但自己有被擊中來向記憶＝朝來向推進/回頭（不對空地開火）
+  if (!tgt && e.threatPos && simTime - e.threatT <= CONFIG.hunt.threatGrace) { tgt = { pos: e.threatPos, lastSeenPos: e.threatPos, facing: 0, _threat: true }; threatOnly = true; }
+  if (!tgt) { e.engageTimer = 0; huntStep(e, dt); openDoorsNear(e, false); return; }   // 無已知目標＝沒人看得到、也無來向 → 搜索/巡邏（只開不關）
   if (e.patrolTarget != null) releasePatrol(e); e.searchTarget = null; e.searchPath = null;   // 有真目標：放掉搜索/巡邏殘留
 
   const aimPos = tgt.pos;                                   // 實際位置：視線/開火/收尾衝刺
@@ -1866,7 +1880,7 @@ function enemyTick(e, dt) {
   if (seen) {
     const ang = angTo(e.pos, aimPos);
     e.facing = rotToward(e.facing, ang, turn * 2);
-    if (inRange) { e.engageTimer += dt; if (e.engageTimer >= CONFIG.enemy.reactionDelay) enemyAttack(e, ang, dt); }
+    if (inRange && !threatOnly) { e.engageTimer += dt; if (e.engageTimer >= CONFIG.enemy.reactionDelay) enemyAttack(e, ang, dt); }   // 只憑來向記憶＝先朝來向推進/回頭，不對空地開火；親眼看到真目標才射
     else e.engageTimer = 0;
   } else {
     e.engageTimer = 0;
