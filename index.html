@@ -886,7 +886,15 @@ function ensureFileCarrier() {
 // 休息關指派攜帶者（單選；點某員＝把檔案移到他身上）
 function assignFileCarrier(mi) { if (mi < 0 || mi >= roster.length) return; roster.forEach((r, i) => { r.carriesFile = (i === mi); }); restSel = null; }
 function fileCarrierIndex() { return roster ? roster.findIndex(r => r.carriesFile) : -1; }
-function spawnPos(i, n) { return { x: 180, y: clamp(360 - (n - 1) * 18 + i * 36, 70, 650) }; }
+// 我方重生點：圍著作用中地圖的進入點(ENTRY)成隊形展開，而非固定在地圖左邊（自訂地圖好設計）。
+// 隊形軸＝垂直於「ENTRY→地圖內部(EXTRACT)」方向；整體稍往內挪避免貼外牆（卡牆由 collide/separate 收尾）。
+function spawnPos(i, n) {
+  const base = ENTRY || { x: 180, y: 360 };
+  let dx = EXTRACT ? EXTRACT.x - base.x : 1, dy = EXTRACT ? EXTRACT.y - base.y : 0;
+  const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;            // 朝地圖內部的單位向量
+  const inset = 40, spread = (i - (n - 1) / 2) * 34;                 // 往內 40、以隊伍中心對齊 ENTRY
+  return { x: base.x + dx * inset - dy * spread, y: base.y + dy * inset + dx * spread };
+}
 function releasePointer() { if (document.exitPointerLock) document.exitPointerLock(); }
 
 // 開新的一輪 run（從基礎陣容起，先進路線圖）
@@ -922,12 +930,15 @@ function advanceNode() {
 // 開始一場戰鬥（用目前 roster 重建單位、重置敵人/計時）
 function startMission() {
   const mapKey = forcedMap || (roadCurrent != null && roadNode(roadCurrent).map) || 'alpha';
+  cutscene = null; introActive = false;          // 一般戰鬥/沙盒/編輯試玩：清掉任何殘留的序章演出（只有 startIntro 才設 cutscene）
   buildMapDerived(mapKey);                       // 切換到此節點指定的戰鬥地圖（重建衍生表）
   const nodeTB = (roadCurrent != null && roadNode(roadCurrent).timeBudget);
   curTimeBudget = nodeTB || MAP.timeBudget || CONFIG.timeBudget;   // 各關時間：節點 > 地圖 > 全域
   for (const d of MAP.doors) d.open = false;     // 每場戰鬥門重置為關閉
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }   // 破壞物重置為初始形態/滿 HP
   players = roster.map((r, i) => makePlayer(i, r, spawnPos(i, roster.length)));
+  const faceInto = EXTRACT && ENTRY ? angTo(ENTRY, EXTRACT) : 0;   // 開場面向地圖內部（右/上緣進入點才不會對著牆）
+  for (const p of players) { p.facing = faceInto; p.idleAnchor = faceInto; }
   controlledId = 0;
   enemies = []; bullets = []; grenades = []; particles = []; corpses = []; decals = []; soundPings = []; deathCamT = 0; deathCamPos = null; shakeAmt = 0; kickY = 0; hitstopT = 0;
   reservations = new Map(); patrolClaims = new Map(); enemyIdSeq = 1; drops = []; fileDrop = null;
