@@ -35,6 +35,21 @@
   .row button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;padding:3px 6px}
   .tagbtn{display:inline-block;padding:2px 6px;margin:2px;border:1px solid #2a3442;border-radius:3px;background:#121823;color:#9fb3c8;cursor:pointer}
   .tagbtn.on{background:#3a3320;color:#ffd27a;border-color:#7a6a3a}
+  /* ⑤ 地圖管理分頁：寬側欄＋說明，canvas 仍當預覽 */
+  #managePanel{display:none;background:#0a0e14;border-right:1px solid #1f2733;padding:10px 14px;overflow:auto}
+  #managePanel h4{margin:14px 0 4px;color:#7fe3ff;font-size:13px;border-bottom:1px solid #1c2430;padding-bottom:4px}
+  #managePanel h4:first-child{margin-top:0}
+  #managePanel .exp{color:#6b7686;font-size:11px;line-height:1.55;margin:2px 0 8px}
+  #managePanel .mrow{display:flex;align-items:center;gap:6px;margin:5px 0;flex-wrap:wrap}
+  #managePanel .mrow label{flex:0 0 48px;color:#9fb3c8}
+  #managePanel input,#managePanel select{background:#0f141c;border:1px solid #2a3442;color:#e0e8f0;border-radius:4px;padding:4px 6px;font:inherit}
+  #managePanel select{flex:1;min-width:80px}
+  #managePanel button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;padding:5px 10px;font:inherit}
+  #managePanel button:hover{background:#1b2a3a}
+  main.manage{grid-template-columns:400px 1fr}
+  main.manage #tools,main.manage #inspector{display:none}
+  main.manage #managePanel{display:block;grid-column:1}
+  main.manage #cvwrap{grid-column:2}
   footer{padding:5px 10px;background:#0b0f15;border-top:1px solid #1f2733;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ok{color:#5fd06b}.warn{color:#ff9b6b}
   #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.66);display:none;align-items:center;justify-content:center;z-index:10}
@@ -55,34 +70,13 @@
     <span class="tabbtn" data-tab="waypoints">② Waypoint/連線</span>
     <span class="tabbtn" data-tab="enemies">③ 敵人配置</span>
     <span class="tabbtn" data-tab="underlay">④ 底圖</span>
+    <span class="tabbtn" data-tab="manage">⑤ 地圖管理</span>
     <span id="btnbar">
-      <span class="grp"><span class="gl" title="一個 maps.json 檔可裝多張地圖">地圖庫</span>
-        <select id="mapPick" title="切換要編輯的地圖（maps.json 內的一張）"></select>
-        <button id="btnMapAdd" title="新增一張空白地圖到庫">＋</button>
-        <button id="btnMapDel" title="從庫刪除目前地圖">🗑</button>
-        <input id="mapKey" style="width:70px" placeholder="鍵名" title="此地圖在 maps.json 的鍵名（英數/底線）">
-        <button id="btnLibLoad" title="讀入一個 maps.json（取代整個庫）">讀入</button>
-        <button id="btnLibSave" title="下載整個庫成 maps.json">下載</button>
-      </span>
-      <span class="grp"><span class="gl" title="目前正在編輯的這一張地圖">本圖</span>
-        <input id="mapLabel" style="width:92px" placeholder="名稱" title="此地圖的顯示名稱 label">
-        <select id="tplSel" title="以範本/現有地圖開新的一張（會覆蓋目前這張的內容）"></select>
-        <button id="btnNew" title="清成空白地圖（覆蓋目前這張）">空白</button>
-        <span class="muted">尺寸</span><input id="mapW" type="number" style="width:50px" title="地圖寬 (px)"><span class="muted">×</span><input id="mapH" type="number" style="width:50px" title="地圖高 (px)">
-        <button id="btnWall" title="依目前尺寸重建邊界外牆">外牆</button>
-        <button id="btnMirH" title="水平鏡像成新的一張地圖（左右翻、保留原圖；做變體的起點）">⇄</button>
-        <button id="btnMirV" title="垂直鏡像成新的一張地圖（上下翻、保留原圖）">⇅</button>
-      </span>
       <span class="grp"><span class="gl">檢視</span>
         <button id="btnGrid" title="格線吸附開關">格線:開</button>
         <button id="btnFit" title="縮放置中、看到整張地圖">適配</button>
         <button id="btnUndo" title="復原 Ctrl+Z">↶</button>
         <button id="btnRedo" title="重做 Ctrl+Y">↷</button>
-      </span>
-      <span class="grp"><span class="gl" title="只針對目前這一張">單張</span>
-        <button id="btnImport" title="貼上單張地圖 JSON 載入（覆蓋目前這張）">匯入</button>
-        <button id="btnExport" title="匯出目前這張：純 JSON 或 MAPS 片段">匯出</button>
-        <button id="btnPlaytest" title="把目前這張帶進遊戲的自由戰鬥試打（結束/離開回編輯器）">▶ 測試戰鬥</button>
       </span>
       <button id="btnHelp" title="使用說明" style="align-self:center">？</button>
     </span>
@@ -91,6 +85,29 @@
     <aside id="tools"></aside>
     <div id="cvwrap"><canvas id="cv"></canvas></div>
     <aside id="inspector"></aside>
+    <aside id="managePanel">
+      <h4>地圖庫（maps.json）</h4>
+      <div class="exp">一個 maps.json 檔可裝多張地圖。在這裡切換要編輯哪一張、新增/刪除、或讀入/下載整份檔案。</div>
+      <div class="mrow"><label>目前圖</label><select id="mapPick" title="切換要編輯的地圖（maps.json 內的一張）"></select></div>
+      <div class="mrow"><label>鍵名</label><input id="mapKey" placeholder="英數/底線" title="此地圖在 maps.json 的鍵名"><button id="btnMapAdd" title="新增一張空白地圖到庫">＋ 新增</button><button id="btnMapDel" title="從庫刪除目前地圖">🗑 刪除</button></div>
+      <div class="exp">鍵名＝這張在檔案裡的識別字（即時套用）。</div>
+      <div class="mrow"><button id="btnLibLoad" title="讀入一個 maps.json（取代整個庫）">讀入 maps.json…</button><button id="btnLibSave" title="下載整個庫成 maps.json">下載 maps.json</button></div>
+      <div class="exp">讀入會取代整個庫；下載把目前所有地圖存成一份 maps.json（開頭含 _index 目錄）。</div>
+
+      <h4>本圖（目前這一張）</h4>
+      <div class="mrow"><label>名稱</label><input id="mapLabel" placeholder="顯示名稱" title="此地圖的顯示名稱 label"></div>
+      <div class="mrow"><label>開新</label><select id="tplSel" title="以範本/現有地圖開新的一張（會覆蓋目前這張）"></select><button id="btnNew" title="清成空白地圖（覆蓋目前這張）">空白</button></div>
+      <div class="exp">從範本或空白覆蓋「目前這張」（不是新增；要保留舊的請先在上面「＋新增」）。</div>
+      <div class="mrow"><label>尺寸</label><input id="mapW" type="number" style="width:66px" title="地圖寬 (px)"><span class="muted">×</span><input id="mapH" type="number" style="width:66px" title="地圖高 (px)"><button id="btnWall" title="依目前尺寸重建邊界外牆">重建外牆</button></div>
+      <div class="mrow"><label>鏡像</label><button id="btnMirH" title="左右翻成庫裡新的一張（保留原圖；做變體的起點）">⇄ 水平</button><button id="btnMirV" title="上下翻成庫裡新的一張（保留原圖）">⇅ 垂直</button></div>
+      <div class="exp">鏡像會把目前這張翻轉、存成庫裡「新的一張」（原圖保留）＝做變體的起點。</div>
+
+      <h4>單張匯入 / 匯出・測試</h4>
+      <div class="mrow"><button id="btnImport" title="貼上單張地圖 JSON 載入（覆蓋目前這張）">匯入單張 JSON…</button><button id="btnExport" title="匯出目前這張：純 JSON 或 MAPS 片段">匯出單張…</button></div>
+      <div class="exp">匯入會覆蓋目前這張；匯出可選純 JSON 或可貼進 index.html 的 MAPS 片段。</div>
+      <div class="mrow"><button id="btnPlaytest" title="把目前這張帶進遊戲的自由戰鬥試打（結束/離開回編輯器）">▶ 測試戰鬥</button></div>
+      <div class="exp">把目前這張帶進遊戲的自由戰鬥試打，結束/離開會自動回到編輯器（工作區會還原）。</div>
+    </aside>
   </main>
   <footer id="status">—</footer>
 </div>
@@ -120,6 +137,7 @@ const EDITOR_HELP = [
   '② Waypoint/連線：敵人與撤離走的路網。刪點會自動重編號(遊戲以陣列索引當 id)',
   '③ 敵人配置：在 waypoint 上放敵人類型 / 個性 / 朝向',
   '④ 底圖：墊一張真實平面圖描著畫，只供參考、不會匯出',
+  '⑤ 地圖管理：地圖庫(maps.json)讀入/下載/切換、本圖名稱/尺寸/外牆/鏡像、單張匯入匯出、▶測試戰鬥——都在這分頁的左側面板(空間大、附說明)。檢視(格線/適配/復原/重做)留在右上、各分頁都能用。',
   '',
   '【門/窗嵌牆】門、或破壞物(落地窗/有矮牆窗/可破壞牆段)畫在牆上會自動把該段牆切出缺口、嵌進去；移動後可用屬性面板「切出牆缺口」重切。',
   '【畫布】左鍵放置/拖曳 · 右鍵刪除 · 中鍵或空白+拖曳=平移 · 滾輪=縮放(繞游標)',
@@ -752,9 +770,10 @@ const TOOLSETS = {
   waypoints: [['move', '選取/移動'], ['add', '加點'], ['link', '連線'], ['erase', '刪除']],
   enemies: [['assign', '指派敵人'], ['prisoner', '俘虜'], ['erase', '刪除']],
   underlay: [['umove', '移動/縮放底圖']],
+  manage: [],   // 地圖管理：操作都在左側 #managePanel，無畫布工具
 };
 function clearSel() { sel = null; selRefs = []; marquee = null; linkFrom = null; lastPick = null; }
-function setTab(t) { tab = t; tool = TOOLSETS[t][0][0]; clearSel(); rebuildUI(); }
+function setTab(t) { tab = t; tool = (TOOLSETS[t][0] || [])[0] || null; clearSel(); rebuildUI(); }
 function setTool(t) { tool = t; clearSel(); rebuildToolsUI(); rebuildInspector(); }
 
 /* =====================================================================
@@ -978,7 +997,7 @@ function onContext(w) { const h = (tab === 'objects') ? hitObjects(w) : null; if
 let cv, ctx, toolsEl, inspectorEl, statusEl, mapLabelEl, tplSelEl, overlayEl, ovTitle, ovText, ovMsg, ovBtns, gridBtn, uFileInput, mapWEl, mapHEl, mapPickEl, mapKeyEl;
 let spaceDown = false, domReady = false;
 
-function rebuildUI() { if (!domReady) return; rebuildToolsUI(); rebuildInspector(); if (mapLabelEl) mapLabelEl.value = map.label; if (mapWEl) { mapWEl.value = map.width; mapHEl.value = map.height; } rebuildLibUI(); updateStatus(); }
+function rebuildUI() { if (!domReady) return; const mainEl = document.querySelector('main'); if (mainEl) mainEl.classList.toggle('manage', tab === 'manage'); rebuildToolsUI(); rebuildInspector(); if (mapLabelEl) mapLabelEl.value = map.label; if (mapWEl) { mapWEl.value = map.width; mapHEl.value = map.height; } rebuildLibUI(); updateStatus(); }
 function rebuildLibUI() {   // 重建 maps.json 地圖庫下拉 + 鍵名輸入
   if (!domReady || !mapPickEl) return;
   mapPickEl.innerHTML = '';
