@@ -19,7 +19,7 @@
   .muted{color:#5a6470}
   #btnbar .grp{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border:1px solid #1c2430;border-radius:6px;background:#0c1119}
   #btnbar .gl{color:#6b7686;font-size:10px;letter-spacing:1px;margin-right:1px;align-self:center}
-  main{display:grid;grid-template-columns:128px 1fr 248px;min-height:0}
+  main{display:grid;grid-template-columns:128px 1fr 248px;min-height:0;position:relative}
   #tools{background:#0a0e14;border-right:1px solid #1f2733;padding:8px 6px;display:flex;flex-direction:column;gap:5px;overflow:auto}
   #tools .hd{color:#5a6470;margin:4px 2px 0;font-size:11px}
   .tool{padding:5px 7px;border:1px solid #2a3442;border-radius:4px;background:#121823;color:#9fb3c8;cursor:pointer;text-align:left;white-space:nowrap}
@@ -35,21 +35,18 @@
   .row button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;padding:3px 6px}
   .tagbtn{display:inline-block;padding:2px 6px;margin:2px;border:1px solid #2a3442;border-radius:3px;background:#121823;color:#9fb3c8;cursor:pointer}
   .tagbtn.on{background:#3a3320;color:#ffd27a;border-color:#7a6a3a}
-  /* ⑤ 地圖管理分頁：寬側欄＋說明，canvas 仍當預覽 */
-  #managePanel{display:none;background:#0a0e14;border-right:1px solid #1f2733;padding:10px 14px;overflow:auto}
-  #managePanel h4{margin:14px 0 4px;color:#7fe3ff;font-size:13px;border-bottom:1px solid #1c2430;padding-bottom:4px}
+  /* ⑤ 地圖管理分頁：蓋在整個 main 上的面板（顯示由 JS 直接控制 .style.display）*/
+  #managePanel{display:none;position:absolute;inset:0;z-index:6;background:#0a0e14;padding:16px 22px;overflow:auto}
+  #managePanel .inner{max-width:620px}
+  #managePanel h4{margin:16px 0 4px;color:#7fe3ff;font-size:14px;border-bottom:1px solid #1c2430;padding-bottom:4px}
   #managePanel h4:first-child{margin-top:0}
-  #managePanel .exp{color:#6b7686;font-size:11px;line-height:1.55;margin:2px 0 8px}
-  #managePanel .mrow{display:flex;align-items:center;gap:6px;margin:5px 0;flex-wrap:wrap}
+  #managePanel .exp{color:#7a8696;font-size:11px;line-height:1.6;margin:2px 0 10px}
+  #managePanel .mrow{display:flex;align-items:center;gap:6px;margin:6px 0;flex-wrap:wrap}
   #managePanel .mrow label{flex:0 0 48px;color:#9fb3c8}
-  #managePanel input,#managePanel select{background:#0f141c;border:1px solid #2a3442;color:#e0e8f0;border-radius:4px;padding:4px 6px;font:inherit}
-  #managePanel select{flex:1;min-width:80px}
-  #managePanel button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;padding:5px 10px;font:inherit}
+  #managePanel input,#managePanel select{background:#0f141c;border:1px solid #2a3442;color:#e0e8f0;border-radius:4px;padding:5px 7px;font:inherit}
+  #managePanel select{flex:1;min-width:120px}
+  #managePanel button{background:#15202c;border:1px solid #2a3442;color:#bfe6ff;border-radius:4px;cursor:pointer;padding:6px 12px;font:inherit}
   #managePanel button:hover{background:#1b2a3a}
-  main.manage{grid-template-columns:400px 1fr}
-  main.manage #tools,main.manage #inspector{display:none}
-  main.manage #managePanel{display:block;grid-column:1}
-  main.manage #cvwrap{grid-column:2}
   footer{padding:5px 10px;background:#0b0f15;border-top:1px solid #1f2733;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ok{color:#5fd06b}.warn{color:#ff9b6b}
   #overlay{position:fixed;inset:0;background:rgba(0,0,0,0.66);display:none;align-items:center;justify-content:center;z-index:10}
@@ -85,7 +82,7 @@
     <aside id="tools"></aside>
     <div id="cvwrap"><canvas id="cv"></canvas></div>
     <aside id="inspector"></aside>
-    <aside id="managePanel">
+    <aside id="managePanel"><div class="inner">
       <h4>地圖庫（maps.json）</h4>
       <div class="exp">一個 maps.json 檔可裝多張地圖。在這裡切換要編輯哪一張、新增/刪除、或讀入/下載整份檔案。</div>
       <div class="mrow"><label>目前圖</label><select id="mapPick" title="切換要編輯的地圖（maps.json 內的一張）"></select></div>
@@ -107,7 +104,7 @@
       <div class="exp">匯入會覆蓋目前這張；匯出可選純 JSON 或可貼進 index.html 的 MAPS 片段。</div>
       <div class="mrow"><button id="btnPlaytest" title="把目前這張帶進遊戲的自由戰鬥試打（結束/離開回編輯器）">▶ 測試戰鬥</button></div>
       <div class="exp">把目前這張帶進遊戲的自由戰鬥試打，結束/離開會自動回到編輯器（工作區會還原）。</div>
-    </aside>
+    </div></aside>
   </main>
   <footer id="status">—</footer>
 </div>
@@ -997,7 +994,7 @@ function onContext(w) { const h = (tab === 'objects') ? hitObjects(w) : null; if
 let cv, ctx, toolsEl, inspectorEl, statusEl, mapLabelEl, tplSelEl, overlayEl, ovTitle, ovText, ovMsg, ovBtns, gridBtn, uFileInput, mapWEl, mapHEl, mapPickEl, mapKeyEl;
 let spaceDown = false, domReady = false;
 
-function rebuildUI() { if (!domReady) return; const mainEl = document.querySelector('main'); if (mainEl) mainEl.classList.toggle('manage', tab === 'manage'); rebuildToolsUI(); rebuildInspector(); if (mapLabelEl) mapLabelEl.value = map.label; if (mapWEl) { mapWEl.value = map.width; mapHEl.value = map.height; } rebuildLibUI(); updateStatus(); }
+function rebuildUI() { if (!domReady) return; const mp = document.getElementById('managePanel'); if (mp) mp.style.display = (tab === 'manage') ? 'block' : 'none'; rebuildToolsUI(); rebuildInspector(); if (mapLabelEl) mapLabelEl.value = map.label; if (mapWEl) { mapWEl.value = map.width; mapHEl.value = map.height; } rebuildLibUI(); updateStatus(); }
 function rebuildLibUI() {   // 重建 maps.json 地圖庫下拉 + 鍵名輸入
   if (!domReady || !mapPickEl) return;
   mapPickEl.innerHTML = '';
