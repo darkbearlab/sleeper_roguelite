@@ -121,6 +121,7 @@ const EDITOR_HELP = [
   '③ 敵人配置：在 waypoint 上放敵人類型 / 個性 / 朝向',
   '④ 底圖：墊一張真實平面圖描著畫，只供參考、不會匯出',
   '',
+  '【門/窗嵌牆】門、或破壞物(落地窗/有矮牆窗/可破壞牆段)畫在牆上會自動把該段牆切出缺口、嵌進去；移動後可用屬性面板「切出牆缺口」重切。',
   '【畫布】左鍵放置/拖曳 · 右鍵刪除 · 中鍵或空白+拖曳=平移 · 滾輪=縮放(繞游標)',
   '左側工具列依分頁切換；右側屬性面板編輯選取物的精確數值。',
   '',
@@ -944,7 +945,7 @@ function groupScale(w) {
 function onUp(e) {
   if (panning) { panning = null; return; }
   if (!drag) return;
-  if (drag.kind === 'newseg') { const a = drag.start, b = drag.end; if (dist(a, b) > 4) { const o = addSegment(tool, a.x, a.y, b.x, b.y); if (tool === 'door') cutWallsForDoor(o); sel = { kind: tool, ref: o }; selRefs = [sel]; } }
+  if (drag.kind === 'newseg') { const a = drag.start, b = drag.end; if (dist(a, b) > 4) { const o = addSegment(tool, a.x, a.y, b.x, b.y); if (tool === 'door' || tool === 'destruct') cutWallsForDoor(o); sel = { kind: tool, ref: o }; selRefs = [sel]; } }
   else if (drag.kind === 'newbush') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'bush', ref: addBush(a.x, a.y, b.x - a.x, b.y - a.y) }; selRefs = [sel]; } }
   else if (drag.kind === 'newarea') { const a = drag.start, b = drag.end; if (Math.abs(b.x - a.x) > 6 && Math.abs(b.y - a.y) > 6) { sel = { kind: 'area', ref: addArea(a.x, a.y, b.x - a.x, b.y - a.y) }; selRefs = [sel]; } }
   else if (drag.kind === 'newfeature') { const a = drag.start, b = drag.end; const box = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; if (box.w > 8 && box.h > 8) { selRefs = stampFeature(featureIdx, box); sel = selRefs.length === 1 ? selRefs[0] : null; } }
@@ -1084,6 +1085,7 @@ function rebuildInspector() {
     psel.addEventListener('change', () => { pushUndo(); const p = DESTRUCT_PRESETS[+psel.value]; s.intact = p.intact; s.broken = p.broken; s.hp = p.hp; rebuildInspector(); });
     inspectorEl.appendChild(field('預設', psel));
     inspectorEl.appendChild(field('HP', numInput(s.hp, v => { s.hp = v; })));
+    const cr = document.createElement('div'); cr.className = 'row'; const cb = document.createElement('button'); cb.textContent = '切出牆缺口'; cb.style.flex = '1'; cb.title = '把與此窗/破壞物共線重疊的牆切斷留缺口（窗嵌進牆用）'; cb.addEventListener('click', () => { pushUndo(); cutWallsForDoor(s); updateStatus(); }); cr.appendChild(cb); inspectorEl.appendChild(cr);
     addDeleteBtn('刪除破壞物');
   } else if (k === 'button') {
     const s = sel.ref; h.textContent = '按鈕 ' + s.id;
@@ -1120,7 +1122,7 @@ function rebuildInspector() {
   function addDeleteBtn(label) { const r = document.createElement('div'); r.className = 'row'; r.style.marginTop = '8px'; const b = document.createElement('button'); b.textContent = label; b.style.flex = '1'; b.addEventListener('click', () => { removeSelected(); rebuildInspector(); }); r.appendChild(b); inspectorEl.appendChild(r); }
 }
 function hintFor() {
-  if (tab === 'objects') return '工具放置物件（可重疊）；★特徵＝拖框放整組地圖特徵；選取工具：點選單一(重疊處重複點循環)、空白拖曳框選多個成群組整體縮放/位移；門放到牆上會自動切缺口。右鍵刪除。';
+  if (tab === 'objects') return '工具放置物件（可重疊）；★特徵＝拖框放整組地圖特徵；選取工具：點選單一(重疊處重複點循環)、空白拖曳框選多個成群組整體縮放/位移；門/窗(破壞物)畫在牆上會自動切牆缺口(嵌進牆)。右鍵刪除。';
   if (tab === 'waypoints') return '加點：點空白（開「自動連線」則自動連到所有中間無阻隔的點）；連線：點兩點建/斷邊、點線上刪邊；移動：拖點。';
   return '指派：點 waypoint 放敵人，選後改類型/個性/朝向；俘虜：點放置。';
 }
