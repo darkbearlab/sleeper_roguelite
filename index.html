@@ -119,6 +119,9 @@ const CONFIG = {
   enemyHearRadius: 320,           // 玩家開火驚動半徑（半徑內 IDLE 敵人 → ENGAGED；不論命中）
   // 低矮牆＝掩體：玩家穿越減速、敵人視為實體繞行、不擋視線、子彈「遠距機率擋／貼牆可越射」
   lowWall: { slow: 0.3, touchR: 12, closeRange: 90, blockChance: 0.55 },
+  // 牆體厚度（px，全域固定）：渲染描邊寬＝此值；子彈/視線阻擋以「離中心線 ≤ 半厚」判定（撞渲染牆面而非中心線）。
+  // 40px=1公尺，故 8px≈20cm（室內牆）。承重牆在編輯器平行畫兩條即可，不在資料上分型。移動退避仍走單位半徑（已比牆厚）。
+  wallThick: 8,
   // 重裝敵人裝甲：高機率「整發擋下」非穿甲攻擊；穿甲(pierce)越高越能無視。
   // 有效擋格率 = blockChance × (1 − weapon.pierce)。血量與一般敵人相同，靠這條形成質差。
   armor: { blockChance: 0.85 },
@@ -360,6 +363,30 @@ function closestOnSeg(p, a, b) {
   return { x: a.x + abx * t, y: a.y + aby * t };
 }
 function segCircle(a, b, c, r) { const cp = closestOnSeg(c, a, b); return dist(cp, c) < r; }
+// 兩線段最近距離（相交回 0）——給「厚牆」判定：路徑離牆中心線 ≤ 半厚 即視為撞到渲染牆面
+function segSegDist(p1, p2, p3, p4) {
+  if (segIntersect(p1, p2, p3, p4)) return 0;
+  const c1 = closestOnSeg(p1, p3, p4), c2 = closestOnSeg(p2, p3, p4);
+  const c3 = closestOnSeg(p3, p1, p2), c4 = closestOnSeg(p4, p1, p2);
+  return Math.min(dist(p1, c1), dist(p2, c2), dist(p3, c3), dist(p4, c4));
+}
+const HALFWALL = () => CONFIG.wallThick * 0.5;
+// 線段 a-b 是否打到軸對齊矩形（端點在內 或 與任一邊相交）——給區域地形(車輛/柱/掩體/煙)的子彈/視線判定
+function segHitsRect(a, b, r) {
+  const x2 = r.x + r.w, y2 = r.y + r.h;
+  if ((a.x >= r.x && a.x <= x2 && a.y >= r.y && a.y <= y2) || (b.x >= r.x && b.x <= x2 && b.y >= r.y && b.y <= y2)) return true;
+  const c0 = { x: r.x, y: r.y }, c1 = { x: x2, y: r.y }, c2 = { x: x2, y: y2 }, c3 = { x: r.x, y: y2 };
+  return segIntersect(a, b, c0, c1) || segIntersect(a, b, c1, c2) || segIntersect(a, b, c2, c3) || segIntersect(a, b, c3, c0);
+}
+// 射線 origin+dir·t 打到矩形最近邊的正向 t（origin 在內回 0、無交回 null）——給迷霧視錐被區域截斷
+function rayRectT(o, d, r) {
+  const x2 = r.x + r.w, y2 = r.y + r.h;
+  if (o.x >= r.x && o.x <= x2 && o.y >= r.y && o.y <= y2) return 0;
+  const c0 = { x: r.x, y: r.y }, c1 = { x: x2, y: r.y }, c2 = { x: x2, y: y2 }, c3 = { x: r.x, y: y2 };
+  let best = null;
+  for (const [p, q] of [[c0, c1], [c1, c2], [c2, c3], [c3, c0]]) { const t = raySegT(o, d, p, q); if (t != null && (best == null || t < best)) best = t; }
+  return best;
+}
 
 // 射線 origin + dir·t 與線段 a-b 的最近正向 t（無交回傳 null）
 function raySegT(o, d, a, b) {
@@ -383,6 +410,11 @@ function rayHit(o, ang, maxLen) {
   for (const dr of MAP.doors) {           // 關閉的門也截斷視錐（低矮牆不擋視線）
     if (dr.open) continue;
     const t = raySegT(o, d, { x: dr.x1, y: dr.y1 }, { x: dr.x2, y: dr.y2 });
+    if (t != null && t < best) best = t;
+  }
+  for (const z of (MAP.areas || [])) {    // 擋視線的區域(實體/掩體/煙幕)也截斷視錐
+    if (!aMat(z).los) continue;
+    const t = rayRectT(o, d, z);
     if (t != null && t < best) best = t;
   }
   return { x: o.x + d.x * best, y: o.y + d.y * best };
@@ -422,6 +454,12 @@ const MAPS = {
       { x1: 720, y1: 380, x2: 720, y2: 500, hp: 40, intact: 'glass',   broken: 'lowwall' }, // 有矮牆窗→矮牆
       { x1: 800, y1: 220, x2: 800, y2: 340, hp: 60, intact: 'wall',    broken: 'lowwall' }, // 可破壞全遮蔽→矮牆
       { x1: 1040, y1: 220, x2: 1040, y2: 340, hp: 9999, intact: 'fence', broken: 'fence' }, // 鐵絲網（看穿/穿彈/打不壞）
+    ],
+    areas: [   // 區域地形示範（皆放右側開闊處、不壓 waypoint 邊、不擋 y360 撤離主軸）
+      { x: 980,  y: 90,  w: 120, h: 80,  mat: 'lowcover' }, // 大片矮掩體：可越看越射、玩家減速
+      { x: 1090, y: 220, w: 70,  h: 90,  mat: 'cover' },    // 大型掩體(車輛)：躲後面、偶被穿
+      { x: 980,  y: 420, w: 110, h: 100, mat: 'smoke' },    // 靜態煙幕：走得過打得過、看不穿
+      { x: 980,  y: 560, w: 160, h: 60,  mat: 'barrier' },  // 壕溝/欄杆：走不過、看穿打穿
     ],
     waypoints: [
       { id: 0,  pos: { x: 130,  y: 360 }, tags: ['patrol', 'spawn'] },
@@ -641,10 +679,24 @@ const DESTRUCT = {
 };
 const dProfile = (d) => DESTRUCT[d.cur] || DESTRUCT.flat;
 const destructibles = () => MAP.destructibles || [];
+// 區域地形(MAP.areas=[{x,y,w,h,mat}])材質表：同樣以 {move,los,bullet} 三軸描述（與 DESTRUCT 同語彙）。
+//   move: true=全擋 / 'slow'=玩家減速+敵實體 / false=可穿過    los: true=擋視線 / false=可看穿
+//   bullet: 'block'=全擋 / 'prob'=掩體機率擋 / 'pass'=穿過
+const MATERIALS = {
+  solid:    { move: true,   los: true,  bullet: 'block', name: '實體',   col: '74,85,102' },   // 柱子/建築/實心車體＝牆的區域版
+  cover:    { move: true,   los: true,  bullet: 'prob',  name: '大型掩體', col: '96,84,68' },   // 車輛：躲後面、偶被穿
+  barrier:  { move: true,   los: false, bullet: 'pass',  name: '壕溝/欄杆', col: '120,128,140' },// 走不過、看穿打穿（鐵網的區域版）
+  lowcover: { move: 'slow', los: false, bullet: 'prob',  name: '矮掩體叢', col: '120,104,72' },  // 大片矮掩體：可越看越射、減速
+  smoke:    { move: false,  los: true,  bullet: 'pass',  name: '煙幕',     col: '150,150,158' }, // 走得過打得過、看不穿（靜態）
+};
+const aMat = (a) => MATERIALS[a.mat] || MATERIALS.solid;
+const areas = () => MAP.areas || [];
 function segBlocked(a, b) {
-  for (const w of MAP.walls) if (segIntersect(a, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 })) return true;
-  for (const d of MAP.doors) if (!d.open && segIntersect(a, b, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 })) return true;
+  const T = HALFWALL();   // 牆/門以「離中心線 ≤ 半厚」擋視線＝撞渲染牆面
+  for (const w of MAP.walls) if (segSegDist(a, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }) <= T) return true;
+  for (const d of MAP.doors) if (!d.open && segSegDist(a, b, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }) <= T) return true;
   for (const d of destructibles()) if (dProfile(d).los && segIntersect(a, b, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 })) return true;   // 擋視線的破壞物(wall 形態)
+  for (const z of areas()) if (aMat(z).los && segHitsRect(a, b, z)) return true;   // 擋視線區域(實體/掩體/煙幕)
   return false;
 }
 const clearLine = (a, b) => !segBlocked(a, b);
@@ -1561,8 +1613,9 @@ function updateBullets(dt) {
     b.x += b.vx * dt; b.y += b.vy * dt;
     b.traveled += Math.hypot(b.vx, b.vy) * dt;
     let gone = b.traveled > b.range;
-    if (!gone) for (const w of MAP.walls) if (segIntersect(old, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 })) { gone = true; break; }           // 永久牆全擋
-    if (!gone) for (const dr of MAP.doors) if (!dr.open && segIntersect(old, b, { x: dr.x1, y: dr.y1 }, { x: dr.x2, y: dr.y2 })) { gone = true; break; } // 關門全擋
+    const TW = HALFWALL();   // 子彈撞渲染牆面（離中心線 ≤ 半厚）
+    if (!gone) for (const w of MAP.walls) if (segSegDist(old, b, { x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 }) <= TW) { gone = true; break; }           // 永久牆全擋
+    if (!gone) for (const dr of MAP.doors) if (!dr.open && segSegDist(old, b, { x: dr.x1, y: dr.y1 }, { x: dr.x2, y: dr.y2 }) <= TW) { gone = true; break; } // 關門全擋
     // 低矮牆＝掩體：射手貼近(<closeRange)可越射；否則 blockChance 機率擋下
     if (!gone) for (const lw of MAP.lowWalls) {
       if (!segIntersect(old, b, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 })) continue;
@@ -1579,6 +1632,16 @@ function updateBullets(dt) {
       else if (prof.bullet === 'prob') { const cp = closestOnSeg({ x: b.ox, y: b.oy }, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }); blocked = dist({ x: b.ox, y: b.oy }, cp) >= CONFIG.lowWall.closeRange && Math.random() < CONFIG.lowWall.blockChance; hit = blocked; }
       if (hit) { d.curHp -= b.dmg; if (d.curHp <= 0) d.cur = d.broken; spawnHit({ x: b.x, y: b.y }); }
       if (blocked) { gone = true; break; }
+    }
+    // 區域地形：solid 全擋；cover/矮掩體＝掩體(貼近矩形可越射，否則 blockChance 機率擋)；barrier/smoke 穿過
+    if (!gone) for (const z of areas()) {
+      const bt = aMat(z).bullet; if (bt === 'pass') continue;
+      if (!segHitsRect(old, b, z)) continue;
+      if (bt === 'block') { gone = true; break; }
+      if (bt === 'prob') {
+        const cx = clamp(b.ox, z.x, z.x + z.w), cy = clamp(b.oy, z.y, z.y + z.h);
+        if (dist({ x: b.ox, y: b.oy }, { x: cx, y: cy }) >= CONFIG.lowWall.closeRange && Math.random() < CONFIG.lowWall.blockChance) { gone = true; break; }
+      }
     }
     if (!gone) {
       const targets = b.faction === 'player' ? enemies.filter(e => !e.dead) : activePlayers();
@@ -1922,6 +1985,15 @@ function pushOutSeg(u, x1, y1, x2, y2) {
   const dx = u.pos.x - cp.x, dy = u.pos.y - cp.y, d = Math.hypot(dx, dy);
   if (d < u.radius) { const push = u.radius - d, nx = d > 1e-6 ? dx / d : 1, ny = d > 1e-6 ? dy / d : 0; u.pos.x += nx * push; u.pos.y += ny * push; }
 }
+// 把單位推出軸對齊矩形（圓-AABB 解碰）：圓心在外推到最近邊外、在內沿最小貫穿軸彈出
+function pushOutRect(u, r) {
+  const x2 = r.x + r.w, y2 = r.y + r.h, p = u.pos;
+  const cx = clamp(p.x, r.x, x2), cy = clamp(p.y, r.y, y2);
+  const dx = p.x - cx, dy = p.y - cy, d2 = dx * dx + dy * dy;
+  if (d2 > 1e-9) { const d = Math.sqrt(d2); if (d < u.radius) { const push = u.radius - d; p.x += dx / d * push; p.y += dy / d * push; } }
+  else { const left = p.x - r.x, right = x2 - p.x, top = p.y - r.y, bot = y2 - p.y, m = Math.min(left, right, top, bot);
+    if (m === left) p.x = r.x - u.radius; else if (m === right) p.x = x2 + u.radius; else if (m === top) p.y = r.y - u.radius; else p.y = y2 + u.radius; }
+}
 function collideWalls(u) {
   for (const w of MAP.walls) pushOutSeg(u, w.x1, w.y1, w.x2, w.y2);
   for (const dr of MAP.doors) if (!dr.open) pushOutSeg(u, dr.x1, dr.y1, dr.x2, dr.y2);   // 關門擋全部單位
@@ -1930,11 +2002,16 @@ function collideWalls(u) {
     const mv = dProfile(d).move;
     if (mv === true || (mv === 'slow' && u.faction === 'enemy')) pushOutSeg(u, d.x1, d.y1, d.x2, d.y2);
   }
+  for (const z of areas()) {   // 區域地形：solid/cover/barrier(move:true) 全擋；矮掩體(move:'slow') 僅對敵實體
+    const mv = aMat(z).move;
+    if (mv === true || (mv === 'slow' && u.faction === 'enemy')) pushOutRect(u, z);
+  }
 }
 // 玩家是否貼著低矮牆（→ 移動減速）。低矮牆不擋玩家、只拖慢。破壞物的矮牆形態同樣減速。
 function onLowWall(pos, r) {
   for (const lw of MAP.lowWalls) { const cp = closestOnSeg(pos, { x: lw.x1, y: lw.y1 }, { x: lw.x2, y: lw.y2 }); if (dist(pos, cp) < r) return true; }
   for (const d of destructibles()) { if (dProfile(d).move !== 'slow') continue; const cp = closestOnSeg(pos, { x: d.x1, y: d.y1 }, { x: d.x2, y: d.y2 }); if (dist(pos, cp) < r) return true; }
+  for (const z of areas()) { if (aMat(z).move !== 'slow') continue; const cx = clamp(pos.x, z.x, z.x + z.w), cy = clamp(pos.y, z.y, z.y + z.h); if (dist(pos, { x: cx, y: cy }) < r) return true; }
   return false;
 }
 const lowWallSpeedMult = (pos) => onLowWall(pos, CONFIG.unitRadius + CONFIG.lowWall.touchR) ? CONFIG.lowWall.slow : 1;
@@ -2249,7 +2326,7 @@ function draw() {
 
   // ---- 世界（鏡頭變換）----
   ctx.save(); applyCam();
-  drawGrid(); drawBushes(); drawLowWalls(); drawDestructibles(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
+  drawGrid(); drawBushes(); drawAreas(); drawLowWalls(); drawDestructibles(); drawWalls(); drawDoors(); drawButtons(); drawWaypoints(); drawZonesWorld();
   drawDecals(); drawCorpses(); drawDrops(); drawPrisoners(); drawIntroActors(); drawParticles(); drawBullets(); drawGrenades(); drawEnemies(); drawPlayers();
   if (debugView) drawDebug();
   ctx.restore();
@@ -2361,8 +2438,27 @@ function drawGrid() {
   for (let y = 40; y <= 680; y += 40) { ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(1240, y); ctx.stroke(); }
 }
 function drawWalls() {
-  ctx.strokeStyle = '#4a5566'; ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.strokeStyle = '#4a5566'; ctx.lineWidth = CONFIG.wallThick; ctx.lineCap = 'round';
   for (const w of MAP.walls) { ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke(); }
+}
+// 區域地形：solid/cover 實心、barrier/lowcover 半透+斜線(可看穿/越射)、smoke 柔灰半透
+function drawAreas() {
+  for (const z of areas()) {
+    const m = aMat(z), col = m.col || '120,120,120';
+    if (z.mat === 'smoke') {
+      ctx.fillStyle = `rgba(${col},0.5)`; ctx.fillRect(z.x, z.y, z.w, z.h);
+    } else if (m.los === false) {   // barrier / lowcover：可看穿 → 半透 + 斜線示意
+      ctx.fillStyle = `rgba(${col},0.20)`; ctx.fillRect(z.x, z.y, z.w, z.h);
+      ctx.save(); ctx.beginPath(); ctx.rect(z.x, z.y, z.w, z.h); ctx.clip();
+      ctx.strokeStyle = `rgba(${col},0.55)`; ctx.lineWidth = 1.5;
+      for (let x = z.x - z.h; x < z.x + z.w; x += 12) { ctx.beginPath(); ctx.moveTo(x, z.y + z.h); ctx.lineTo(x + z.h, z.y); ctx.stroke(); }
+      ctx.restore();
+      ctx.setLineDash([8, 5]); ctx.strokeStyle = `rgba(${col},0.85)`; ctx.lineWidth = 2; ctx.strokeRect(z.x, z.y, z.w, z.h); ctx.setLineDash([]);
+    } else {   // solid / cover：實心方塊
+      ctx.fillStyle = `rgba(${col},${z.mat === 'cover' ? 0.82 : 0.95})`; ctx.fillRect(z.x, z.y, z.w, z.h);
+      ctx.strokeStyle = `rgba(${col},1)`; ctx.lineWidth = 2; ctx.strokeRect(z.x, z.y, z.w, z.h);
+    }
+  }
 }
 // 門：關＝粗琥珀實線（實體）；開＝細淡虛線（可通行）
 function drawDoors() {
@@ -2644,6 +2740,7 @@ function drawSkeleton() {
   for (const w of MAP.walls) { ctx.beginPath(); ctx.moveTo(w.x1, w.y1); ctx.lineTo(w.x2, w.y2); ctx.stroke(); }
   ctx.strokeStyle = '#caa05a'; for (const d of MAP.doors) { if (d.open) continue; ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke(); }  // 關門也給空間參考
   ctx.strokeStyle = '#7d96b0'; ctx.lineWidth = 3; for (const lw of MAP.lowWalls) { ctx.beginPath(); ctx.moveTo(lw.x1, lw.y1); ctx.lineTo(lw.x2, lw.y2); ctx.stroke(); }
+  ctx.lineWidth = 2; for (const z of (MAP.areas || [])) { ctx.strokeStyle = `rgb(${aMat(z).col})`; ctx.strokeRect(z.x, z.y, z.w, z.h); }   // 區域地形空間參考
   ctx.globalAlpha = 1;
 }
 
@@ -3217,11 +3314,12 @@ function drawRoadmap() {
    ===================================================================== */
 let editorBtnRect = null;
 const isDragTool = (t) => t === 'wall' || t === 'door' || t === 'low' || t === 'bush' || t === 'destruct';
-function blankEditMap() { return { label: '新關卡', timeBudget: 0, walls: [...rectWalls(40, 40, 1240, 680)], doors: [], lowWalls: [], bushes: [], destructibles: [], buttons: [], waypoints: [], edges: [], entryPoints: [{ x: 110, y: 360 }], extractionPoints: [{ x: 1190, y: 360 }], enemySpawns: [], prisoners: [] }; }
+function blankEditMap() { return { label: '新關卡', timeBudget: 0, walls: [...rectWalls(40, 40, 1240, 680)], doors: [], lowWalls: [], bushes: [], destructibles: [], areas: [], buttons: [], waypoints: [], edges: [], entryPoints: [{ x: 110, y: 360 }], extractionPoints: [{ x: 1190, y: 360 }], enemySpawns: [], prisoners: [] }; }
 function normalizeEdit(e) {
   e.label = e.label || '新關卡'; if (typeof e.timeBudget !== 'number') e.timeBudget = 0;
-  for (const k of ['walls', 'doors', 'lowWalls', 'bushes', 'destructibles', 'buttons', 'waypoints', 'edges', 'entryPoints', 'extractionPoints', 'enemySpawns', 'prisoners']) if (!Array.isArray(e[k])) e[k] = [];
+  for (const k of ['walls', 'doors', 'lowWalls', 'bushes', 'destructibles', 'areas', 'buttons', 'waypoints', 'edges', 'entryPoints', 'extractionPoints', 'enemySpawns', 'prisoners']) if (!Array.isArray(e[k])) e[k] = [];
   e.destructibles.forEach(d => { if (!d.intact) d.intact = 'lowwall'; if (!d.broken) d.broken = 'flat'; if (typeof d.hp !== 'number') d.hp = 30; });
+  e.areas.forEach(z => { if (!MATERIALS[z.mat]) z.mat = 'solid'; });
   if (!e.entryPoints.length) e.entryPoints = [{ x: 110, y: 360 }];
   if (!e.extractionPoints.length) e.extractionPoints = [{ x: 1190, y: 360 }];
   e.waypoints.forEach((w, i) => { w.id = i; if (!w.tags) w.tags = ['patrol']; if (!w.pos) w.pos = { x: 640, y: 360 }; });
