@@ -718,6 +718,8 @@ let drag = null;           // 拖曳狀態
 let linkFrom = null;       // 連線起點 waypoint index
 let snap = 20;             // 格線吸附（0=關）
 let destructPreset = 0;
+let assignType = 'grunt';      // 指派敵人工具：目前要放的敵人類型
+let assignPers = '(預設)';      // 指派敵人工具：目前要放的個性
 let tagBrush = 'patrol';
 let mouseWorld = { x: 0, y: 0 };
 let panning = null;
@@ -888,8 +890,12 @@ function downEnemies(w) {
       const s = spawnAt(sel.nodeId);
       if (s) { const node = map.waypoints[s.nodeId].pos; const hp = { x: node.x + Math.cos(s.facing || 0) * 34, y: node.y + Math.sin(s.facing || 0) * 34 }; if (dist(w, hp) < wr(12)) { drag = { kind: 'facing', nodeId: s.nodeId, did: false }; return; } }
     }
-    if (ni >= 0) { if (!spawnAt(ni)) setSpawn(ni, { type: 'grunt', facing: Math.PI }); sel = { kind: 'spawn', nodeId: ni }; }
-    else sel = null;
+    if (ni >= 0) {
+      const ex = spawnAt(ni);
+      if (!ex) setSpawn(ni, { type: assignType, personality: assignPers, facing: Math.PI });   // 空點＝放下目前選的類型/個性
+      else { assignType = ex.type || 'grunt'; assignPers = ex.personality || '(預設)'; }         // 已有＝選取並把筆刷同步成它(不覆蓋；改用右側面板或重選類型後再放別點)
+      sel = { kind: 'spawn', nodeId: ni }; rebuildToolsUI();
+    } else sel = null;
   } else if (tool === 'prisoner') {
     for (const pr of map.prisoners) if (dist(w, pr) < wr(12)) { sel = { kind: 'prisoner', ref: pr }; drag = { kind: 'ptmove', ref: pr, start: w, o: { x: pr.x, y: pr.y }, did: false }; return; }
     sel = { kind: 'prisoner', ref: addPrisoner(snapV(w.x), snapV(w.y)) };
@@ -999,6 +1005,12 @@ function rebuildToolsUI() {
     const b = document.createElement('div'); b.className = 'tool' + (autoLink ? ' on' : ''); b.textContent = '自動連線:' + (autoLink ? '開' : '關'); b.title = '新增點時自動連到所有中間無阻隔的點';
     b.addEventListener('click', () => { autoLink = !autoLink; rebuildToolsUI(); }); toolsEl.appendChild(b);
   }
+  if (tab === 'enemies' && tool === 'assign') {
+    const hd2 = document.createElement('div'); hd2.className = 'hd'; hd2.textContent = '敵人類型（點 waypoint 放置）'; toolsEl.appendChild(hd2);
+    ENEMY_TYPE_IDS.forEach(t => { const b = document.createElement('div'); b.className = 'tool' + (assignType === t ? ' on' : ''); b.textContent = ENEMY_META[t].name; b.title = t; b.addEventListener('click', () => { assignType = t; rebuildToolsUI(); }); toolsEl.appendChild(b); });
+    const hd3 = document.createElement('div'); hd3.className = 'hd'; hd3.textContent = '個性'; toolsEl.appendChild(hd3);
+    PERSONALITIES.forEach(p => { const b = document.createElement('div'); b.className = 'tool' + (assignPers === p ? ' on' : ''); b.textContent = p; b.addEventListener('click', () => { assignPers = p; rebuildToolsUI(); }); toolsEl.appendChild(b); });
+  }
 }
 function field(label, inputEl) { const r = document.createElement('div'); r.className = 'row'; const l = document.createElement('label'); l.textContent = label; r.appendChild(l); r.appendChild(inputEl); return r; }
 function numInput(val, on) { const i = document.createElement('input'); i.type = 'number'; i.value = Math.round(val); i.addEventListener('input', () => { if (i.value !== '' && i.value !== '-') { on(+i.value); } }); return i; }
@@ -1052,10 +1064,10 @@ function rebuildInspector() {
     const s = spawnAt(sel.nodeId); if (!s) { sel = null; return rebuildInspector(); }
     h.textContent = '敵人 @ #' + sel.nodeId;
     const tsel = document.createElement('select'); ENEMY_TYPE_IDS.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = ENEMY_META[t].name + ' (' + t + ')'; tsel.appendChild(o); }); tsel.value = s.type || 'grunt';
-    tsel.addEventListener('change', () => setSpawn(sel.nodeId, { type: tsel.value }));
+    tsel.addEventListener('change', () => { setSpawn(sel.nodeId, { type: tsel.value }); assignType = tsel.value; rebuildToolsUI(); });
     inspectorEl.appendChild(field('類型', tsel));
     const psel = document.createElement('select'); PERSONALITIES.forEach(pp => { const o = document.createElement('option'); o.value = pp; o.textContent = pp; psel.appendChild(o); }); psel.value = s.personality || '(預設)';
-    psel.addEventListener('change', () => setSpawn(sel.nodeId, { personality: psel.value }));
+    psel.addEventListener('change', () => { setSpawn(sel.nodeId, { personality: psel.value }); assignPers = psel.value; rebuildToolsUI(); });
     inspectorEl.appendChild(field('個性', psel));
     const deg = document.createElement('input'); deg.type = 'number'; deg.value = Math.round((s.facing || 0) * 180 / Math.PI); deg.addEventListener('input', () => { if (deg.value !== '' && deg.value !== '-') setSpawn(sel.nodeId, { facing: (+deg.value) * Math.PI / 180 }); });
     inspectorEl.appendChild(field('朝向°', deg));
