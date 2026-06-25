@@ -3935,7 +3935,9 @@ function drawSettle() {
 function settleClick(mx, my) { for (const r of settleRects) if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) { r.fn(); return; } }
 
 /* ---- 事件畫面 ---- */
-function eBtn(x, y, w, h, label, fn) {
+// 事件畫面按鈕（push 到 eventRects）。注意：編輯器另有同名 eBtn（push 到 editRects），
+// 函式宣告同作用域會被後者覆蓋＝事件按鈕會被註冊到錯的陣列→點不到→事件卡死。故改名 evBtn 避免衝突。
+function evBtn(x, y, w, h, label, fn) {
   ctx.fillStyle = 'rgba(54,46,74,0.95)'; ctx.fillRect(x, y, w, h);
   ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(170,140,220,0.85)'; ctx.strokeRect(x, y, w, h);
   ctx.fillStyle = '#e6dcff'; ctx.font = 'bold 15px Consolas'; ctx.textAlign = 'center'; ctx.fillText(label, x + w / 2, y + h / 2 + 5);
@@ -3973,10 +3975,10 @@ function drawEvent() {
       ctx.fillStyle = '#9fd0e0'; ctx.font = '10px Consolas'; (r.passives || []).forEach((pid, j) => ctx.fillText('· ' + (PASSIVES[pid] ? PASSIVES[pid].name : pid), x + 14, y + 62 + j * 14));
       eventRects.push({ x, y, w: cw, h: ch, fn: () => eventApplyTarget(i) });
     });
-    ctx.textAlign = 'center'; eBtn(cv.width / 2 - 70, y + ch + 24, 140, 36, '← 返回', () => { eventPhase = 'CHOICE'; eventPendingChoice = null; });
+    ctx.textAlign = 'center'; evBtn(cv.width / 2 - 70, y + ch + 24, 140, 36, '← 返回', () => { eventPhase = 'CHOICE'; eventPendingChoice = null; });
   } else {   // DONE
     ctx.fillStyle = '#7fffa8'; ctx.font = 'bold 18px Consolas'; ctx.fillText(eventMsg, cv.width / 2, 210);
-    eBtn(cv.width / 2 - 100, 260, 200, 48, '前進 →', () => eventAdvance());
+    evBtn(cv.width / 2 - 100, 260, 200, 48, '前進 →', () => eventAdvance());
   }
   ctx.textAlign = 'left';
 }
