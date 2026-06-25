@@ -1134,9 +1134,27 @@ function endMission() {
   const survivors = players.filter(p => p.state === 'EXTRACTED');
   const fileSafe = survivors.some(p => p.hasFile);   // 機密檔案必須由「撤出成功」的人帶出，否則整局失敗（躺地上/隨陣亡者沒了都算遺失）
   lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe };
-  if (survivors.length >= 1 && fileSafe) { roster = survivors.map(rosterFromPlayer); missionIndex++; advanceNode(); }
+  if (survivors.length >= 1 && fileSafe) { roster = survivors.map(rosterFromPlayer); missionIndex++; enterSettle(); }   // 勝利→戰果結算(挑人升階)→路線圖
   else { scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; releasePointer(); }
 }
+
+/* =====================================================================
+   戰果結算（COMBAT 勝利 → 此 → 路線圖）：撤出/陣亡名單 + 挑一名存活者升一階(二選一)。
+   不要經驗值、不批次：每場一次、當場解決。第0關/沙盒/編輯不到此(endMission 已早退)。
+   ===================================================================== */
+let settlePhase = 'PICK', settleSel = -1, settleMsg = '', settleRects = [];
+const settleTree = (r) => PASSIVE_TREES[ARCHETYPES[r.archetypeId].tree];
+const settleEligible = (r) => (r.tier || 0) < 3 && !!(settleTree(r) && settleTree(r)[r.tier || 0]);   // 未滿階且有該階配對（回傳布林）
+const settlePair = (r) => settleTree(r)[r.tier || 0];
+function enterSettle() { settlePhase = 'PICK'; settleSel = -1; settleMsg = ''; scene = 'SETTLE'; releasePointer(); }
+function settlePromote(mi, pid) {
+  const r = roster[mi]; if (!r || !settleEligible(r) || settlePair(r).indexOf(pid) < 0) return;
+  r.passives = (r.passives || []).concat([pid]); r.tier = (r.tier || 0) + 1;
+  settleMsg = `${r.name} 習得「${PASSIVES[pid].name}」 — ${ARCHETYPES[r.archetypeId].name} ${'★'.repeat(r.tier)}`;
+  settlePhase = 'DONE';
+}
+function settleSkip() { settleMsg = '（本場未升階）'; settlePhase = 'DONE'; }
+function settleAdvance() { advanceNode(); }   // → 路線圖 / RUNWIN
 
 /* =====================================================================
    第0關（序章 / 教學）：cutscene 導演 + 演出 actor。流程見對話腳本 introBeats。
@@ -2221,6 +2239,7 @@ cv.addEventListener('click', () => {
     const id = roadNodeAt(mouse.mx, mouse.my); if (id != null) selectNode(id);
   }
   else if (scene === 'REST' || scene === 'ARMORY') restClick(mouse.mx, mouse.my);
+  else if (scene === 'SETTLE') settleClick(mouse.mx, mouse.my);
   else if (scene === 'RUNEND' || scene === 'RUNWIN') goMenu();
   else if (scene === 'MENU') menuClick(mouse.mx, mouse.my);
   // EDITOR：互動在 mousedown/up 處理（支援拖拉），click 不處理
@@ -2310,6 +2329,7 @@ window.addEventListener('keydown', e => {
   if (scene === 'ARMORY') { if (k >= '1' && k <= '9') armoryPick(parseInt(k, 10) - 1); return; }
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') goMenu(); return; }
   if (scene === 'MENU') return;   // 主選單以滑鼠點選
+  if (scene === 'SETTLE') { if (k === 'enter' || k === ' ') { if (settlePhase === 'PICK') settleSkip(); else if (settlePhase === 'DONE') settleAdvance(); } return; }   // 結算以滑鼠點選；Enter 略過/前進
   if (scene === 'SANDBOX') return;   // 設定畫面以 DOM 表單操作，不接遊戲鍵
 
   // --- COMBAT ---
@@ -2444,6 +2464,7 @@ function draw() {
   if (scene === 'MAP') { drawRoadmap(); return; }
   if (scene === 'EDITOR') { drawEditor(); return; }
   if (scene === 'REST') { drawRest(); return; }
+  if (scene === 'SETTLE') { drawSettle(); return; }
   if (scene === 'ARMORY') { drawArmory(); return; }
   if (scene === 'RUNEND') { drawRunEnd(); return; }
   if (scene === 'RUNWIN') { drawRunWin(); return; }
@@ -3378,6 +3399,73 @@ function drawRunWin() {
   ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, cv.height / 2 + 64);
   ctx.textAlign = 'left';
 }
+
+/* ---- 戰果結算畫面（COMBAT 勝利 → 此 → 路線圖）---- */
+function sBtn(x, y, w, h, label, on, fn) {
+  ctx.fillStyle = on ? 'rgba(54,66,84,0.95)' : 'rgba(38,44,52,0.6)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.4; ctx.strokeStyle = on ? 'rgba(160,180,200,0.8)' : 'rgba(90,100,110,0.5)'; ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = on ? '#dbe8f5' : '#6a727c'; ctx.font = 'bold 15px Consolas'; ctx.textAlign = 'center';
+  ctx.fillText(label, x + w / 2, y + h / 2 + 5);
+  if (on && fn) settleRects.push({ x, y, w, h, fn });
+}
+function drawSettleUnitCard(x, y, w, h, r, elig) {
+  ctx.fillStyle = elig ? 'rgba(28,40,30,0.92)' : 'rgba(30,34,40,0.7)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = elig ? 'rgba(95,208,107,0.75)' : 'rgba(80,90,100,0.5)'; ctx.strokeRect(x, y, w, h);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = elig ? '#dbe8f5' : '#8b97a5'; ctx.font = 'bold 14px Consolas'; ctx.fillText(r.name, x + 12, y + 24);
+  const arch = ARCHETYPES[r.archetypeId];
+  ctx.fillStyle = TIER_COLOR[r.tier || 0]; ctx.font = '12px Consolas';
+  ctx.fillText(arch.name + ' ' + '★'.repeat(r.tier || 0) + (elig ? '' : ' (滿階)'), x + 12, y + 44);
+  ctx.fillStyle = '#8b97a5'; ctx.font = '10px Consolas'; ctx.fillText(arch.desc, x + 12, y + 60);
+  ctx.fillStyle = '#9fd0e0'; ctx.font = '11px Consolas';
+  (r.passives || []).forEach((pid, j) => ctx.fillText('· ' + (PASSIVES[pid] ? PASSIVES[pid].name : pid), x + 14, y + 80 + j * 15));
+  if (elig) { ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 11px Consolas'; ctx.fillText('▶ 點此升階', x + 12, y + h - 12); }
+}
+function drawSettleOptionCard(x, y, w, h, P) {
+  ctx.fillStyle = 'rgba(40,46,58,0.95)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.6; ctx.strokeStyle = 'rgba(127,227,255,0.7)'; ctx.strokeRect(x, y, w, h);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#bfe6ff'; ctx.font = 'bold 19px Consolas'; ctx.fillText(P.name, x + 16, y + 36);
+  ctx.fillStyle = '#aebcc9'; ctx.font = '12px Consolas'; ctx.fillText(P.desc, x + 16, y + 64);
+  ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 11px Consolas'; ctx.fillText('▶ 選此', x + 16, y + h - 14);
+}
+function drawSettle() {
+  settleRects = [];
+  ctx.fillStyle = 'rgba(10,14,20,0.97)'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 30px Consolas'; ctx.fillText('戰果結算 · 第 ' + missionIndex + ' 場', cv.width / 2, 50);
+  ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.font = '13px Consolas';
+  ctx.fillText('挑一名撤出的隊員，升一階（二選一）。Enter＝略過 / 前進。', cv.width / 2, 74);
+  const sum = lastSummary || { extracted: [], dead: [] };
+  ctx.textAlign = 'left'; ctx.font = '13px Consolas';
+  ctx.fillStyle = '#5fd06b'; ctx.fillText('撤出: ' + (sum.extracted.join('、') || '—'), 90, 104);
+  ctx.fillStyle = '#8a6a6a'; ctx.fillText('陣亡: ' + (sum.dead.join('、') || '—'), 90, 124);
+  if (sum.fileSafe) { ctx.fillStyle = '#ffd27a'; ctx.fillText('📁 機密檔案已帶出', cv.width - 260, 104); }
+
+  if (settlePhase === 'PASS') {
+    const r = roster[settleSel];
+    if (!r || !settleEligible(r)) { settlePhase = 'PICK'; settleSel = -1; }
+    else {
+      ctx.textAlign = 'center'; ctx.fillStyle = '#cdd6e0'; ctx.font = 'bold 16px Consolas';
+      ctx.fillText(r.name + ' · ' + ARCHETYPES[r.archetypeId].name + ' → ★' + ((r.tier || 0) + 1) + '：二選一', cv.width / 2, 196);
+      const pair = settlePair(r), cw = 330, gap = 30, x0 = (cv.width - (2 * cw + gap)) / 2, y = 230, ch = 170;
+      pair.forEach((pid, k) => { const x = x0 + k * (cw + gap); drawSettleOptionCard(x, y, cw, ch, PASSIVES[pid]); settleRects.push({ x, y, w: cw, h: ch, fn: () => settlePromote(settleSel, pid) }); });
+      sBtn(cv.width / 2 - 70, y + ch + 26, 140, 36, '← 返回', true, () => { settlePhase = 'PICK'; settleSel = -1; });
+    }
+  }
+  if (settlePhase === 'PICK') {
+    ctx.textAlign = 'center'; ctx.fillStyle = '#cdd6e0'; ctx.font = 'bold 16px Consolas'; ctx.fillText('▾ 選一名升階', cv.width / 2, 184);
+    const n = roster.length, cw = 230, gap = 18, totalW = n * cw + (n - 1) * gap, x0 = (cv.width - totalW) / 2, y = 208, ch = 152;
+    roster.forEach((r, i) => { const x = x0 + i * (cw + gap), elig = settleEligible(r); drawSettleUnitCard(x, y, cw, ch, r, elig); if (elig) settleRects.push({ x, y, w: cw, h: ch, fn: () => { settleSel = i; settlePhase = 'PASS'; } }); });
+    const anyElig = roster.some(settleEligible);
+    sBtn(cv.width / 2 - 95, y + ch + 30, 190, 42, anyElig ? '略過升階 →' : '前進 →（無人可升）', true, () => (anyElig ? settleSkip() : settleAdvance()));
+  } else if (settlePhase === 'DONE') {
+    ctx.textAlign = 'center'; ctx.fillStyle = '#7fffa8'; ctx.font = 'bold 18px Consolas'; ctx.fillText(settleMsg, cv.width / 2, 220);
+    sBtn(cv.width / 2 - 100, 270, 200, 48, '前進 →', true, () => settleAdvance());
+  }
+  ctx.textAlign = 'left';
+}
+function settleClick(mx, my) { for (const r of settleRects) if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) { r.fn(); return; } }
 
 /* ---- 路線圖畫面 ---- */
 function drawRoadmap() {
