@@ -406,6 +406,7 @@ const ENEMY_TYPES = {
   dog:        { name: '警犬',   weaponId: 'fangs',   hp: 45,              moveSpeed: 165,                    personality: 'rusher',  hue: 45,  radius: 9,  coneHalfDeg: 80, senseMul: 1.5, opensDoors: false },  // 快、脆、貼臉連咬、視野廣；動物不會開門
   heavy_lmg:  { name: '重機槍兵', weaponId: 'lmg',   hp: CONFIG.enemy.hp, moveSpeed: 55,                     personality: 'holder',  hue: 280, radius: 14, armor: CONFIG.armor.blockChance, attack: 'burst' },  // 慢、帶甲、點放掃射
   heavy_shot: { name: '霰彈兵', weaponId: 'shotgun', hp: CONFIG.enemy.hp, moveSpeed: 70,                     personality: 'rusher',  hue: 200, radius: 14, armor: CONFIG.armor.blockChance },                   // 中速、帶甲、推進貼臉
+  civ:        { name: '平民',   weaponId: 'pistol',  hp: 30,              moveSpeed: 95,                     personality: 'holder',  hue: 150, radius: 11, opensDoors: false },                                  // 事件演員(小男孩等)；演出鎖控制時不行動、開打才交戰。之後有 asset 換皮、邏輯不變
 };
 const ENEMY_TYPE_IDS = Object.keys(ENEMY_TYPES);
 
@@ -695,6 +696,40 @@ const MAPS = {
     enemySpawns: [],
     prisoners: [],
   },
+  // 事件專用小地圖（scene-kind 事件演出用）。男孩＝civ enemySpawn；演出鎖控制時不行動、開打才交戰。
+  meet: {   // 路上相遇：開闊小空地，男孩站右側面向玩家(在玩家視野內、和平談話)
+    label: '路上相遇', width: 880, height: 520, eventMap: true,
+    walls: [...rectWalls(40, 40, 840, 480)],
+    doors: [], lowWalls: [], bushes: [], destructibles: [], areas: [], buttons: [],
+    waypoints: [
+      { id: 0, pos: { x: 140, y: 260 }, tags: ['spawn'] },
+      { id: 1, pos: { x: 440, y: 260 }, tags: ['patrol'] },
+      { id: 2, pos: { x: 700, y: 260 }, tags: ['patrol'] },
+    ],
+    edges: [[0, 1], [1, 2]],
+    entryPoints: [{ x: 120, y: 260 }],
+    extractionPoints: [{ x: 810, y: 260 }],
+    enemySpawns: [{ nodeId: 2, type: 'civ', facing: Math.PI }],   // 男孩：右側、面向左(玩家進場方向)
+    prisoners: [],
+  },
+  ambush: {   // 巷弄伏擊：玩家從左進、撤在右；男孩躲在掩體後側翼(玩家進場視野外)＝解鎖即被攻擊
+    label: '巷弄伏擊', width: 820, height: 560, eventMap: true,
+    walls: [...rectWalls(40, 40, 780, 520), ...rectWalls(360, 120, 460, 260)],   // 中上一塊掩體柱
+    doors: [], lowWalls: [],
+    bushes: [{ x: 520, y: 360, w: 150, h: 120 }],   // 男孩藏身的暗處
+    destructibles: [], areas: [], buttons: [],
+    waypoints: [
+      { id: 0, pos: { x: 140, y: 300 }, tags: ['spawn'] },
+      { id: 1, pos: { x: 410, y: 360 }, tags: ['patrol'] },
+      { id: 2, pos: { x: 600, y: 420 }, tags: ['flank', 'vantage'] },   // 男孩位置：側翼暗處
+      { id: 3, pos: { x: 680, y: 200 }, tags: ['patrol'] },
+    ],
+    edges: [[0, 1], [1, 2], [1, 3]],
+    entryPoints: [{ x: 120, y: 300 }],
+    extractionPoints: [{ x: 740, y: 200 }],
+    enemySpawns: [{ nodeId: 2, type: 'civ', facing: -Math.PI / 2 }],   // 男孩埋伏在側翼暗處、面向玩家動線
+    prisoners: [],
+  },
   // outpost v2＝前哨站：兩處哨點改用「中央短牆＋上下繞道」(不再整道隔牆)，可繞過哨兵側後或叢間潛行。
   outpost: {
     label: '前哨站',
@@ -978,6 +1013,7 @@ let pointerLocked = false;  // 是否已鎖定滑鼠（FPS 式瞄準）
 // 第0關（序章/教學）：cutscene 導演 + 演出用 actor/標記。詳見 startIntro / cutsceneTick。
 let cutscene = null;         // 演出導演物件（null＝無）：{ beats,i,line,subtitle,lock,gate,cam,victim,flags,advance }
 let introActive = false;     // 序章進行中（影響 endMission 路由、Esc 跳過）
+let eventActive = false;     // scene-kind 事件演出進行中（借戰鬥+cutscene 管線；和平/休息收場直接 advanceNode，開打則清旗標走一般結算）
 let introCast = null;        // 序章三人陣容 configs（主角+2守衛；跳過/演完都用它當 roster）
 let introGuards = [];        // 演出中的守衛 actor [{pos,facing,hue,name}]（密語後轉真單位）
 let introConsole = null;     // 控制台互動點 {x,y,used}（取得機密檔案）
@@ -1146,7 +1182,7 @@ function startMission() {
   prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
   for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type); enemies.push(e); commitReservation(e, e.currentNode); }
   // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
-  for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }
+  if (!MAP.eventMap) for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }   // 事件地圖不加難度遞增兵
   patrolPool = computePatrolPool();   // 本場巡邏點池（IDLE grunt 巡邏用）
   searchFocusNode = null; searchSet = null; searchCleared = null; searchConsumedT = -Infinity;   // 重置交戰後搜索
   simTime = 0; reinforceTimer = 0; lastSwitchT = -Infinity;
@@ -1229,6 +1265,33 @@ const EVENTS = [
       { label: '強行突破（短促交火）', hint: '進入一場戰鬥', outcome: { type: 'combat', map: 'bravo' } },   // TODO 特製短地圖；先借 bravo
       { label: '繞遠路（安全離開）', outcome: { type: 'nothing' } },
     ] },
+  // 場景化事件（kind:'scene'）：在戰鬥地圖上用 cutscene 對話演出。男孩＝meet/ambush 地圖的 civ。
+  { id: 'boy', kind: 'scene', map: 'meet',
+    onEnter: f => { f.boyMet = true; f.boyHostile = srand() < 0.5; },   // 隱藏身分(吃種子)：友善(父親 sleeper) / 敵意(被策反)
+    scene: f => {
+      const boy = () => { const b = enemies.find(e => !e.dead); return b ? b.pos : { x: 700, y: 260 }; };
+      return [
+        { kind: 'cam', to: { x: 440, y: 260, angle: 0 } },
+        { kind: 'say', text: '等等！我知道你們是誰——我父親說你們會經過。', pos: boy },
+        { kind: 'choice', text: '要相信這孩子嗎？', pos: boy, options: [
+          { label: '相信他', then: f.boyHostile
+            ? [{ kind: 'say', text: '……哼，真好騙。', pos: boy }, { kind: 'do', fn: eventResolveCombat }]
+            : [{ kind: 'say', text: '太好了！我父親也是 sleeper，年紀大了上不了場，但能接待你們、給補給。', pos: boy }, { kind: 'do', fn: eventResolveRest }] },
+          { label: '拒絕，要他離開', then: f.boyHostile
+            ? [{ kind: 'say', text: '……你們會後悔的。', pos: boy }, { kind: 'do', fn: () => { setFlag('boyReported'); pendingEvents.push('boyAmbush'); eventResolveAdvance(); } }]
+            : [{ kind: 'say', text: '……我明白了。保重。', pos: boy }, { kind: 'do', fn: eventResolveAdvance }] },
+        ] },
+      ];
+    } },
+  { id: 'boyAmbush', kind: 'scene', map: 'ambush', scripted: true,   // 只由 boy「敵意+拒絕」佇列觸發；節點仍顯 ?（被報位）
+    scene: f => {
+      const boy = () => { const b = enemies.find(e => !e.dead); return b ? b.pos : { x: 600, y: 420 }; };
+      return [
+        { kind: 'reveal', to: { x: 600, y: 420, r: 170 } },
+        { kind: 'say', text: '就是他們！我早通報了——動手！', pos: boy },
+        { kind: 'do', fn: eventResolveCombat },
+      ];
+    } },
 ];
 function eventChoosable(c) { return !(c.req === 'gear' && !hasGear()); }
 function applyEventOutcome(o, mi) {
@@ -1261,9 +1324,22 @@ function enterEvent() {
     if (!pool.length) { eventSeen = []; pool = EVENTS.filter(e => !e.scripted && (!e.cond || e.cond(runFlags))); }
     ev = pool.length ? rngPick(pool) : EVENTS[0];
   }
-  eventCur = ev; if (ev) eventSeen.push(ev.id);
-  eventPhase = 'CHOICE'; eventPendingChoice = null; eventMsg = ''; scene = 'EVENT'; releasePointer();
+  if (ev) eventSeen.push(ev.id);
+  if (ev && ev.kind === 'scene') { startSceneEvent(ev); return; }   // 場景化事件：在戰鬥地圖上用 cutscene 演（含對話選項）
+  eventCur = ev; eventPhase = 'CHOICE'; eventPendingChoice = null; eventMsg = ''; scene = 'EVENT'; releasePointer();
 }
+// 場景化事件：借序章管線——載 ev.map、startMission 生我方+演員(enemySpawns 的 civ)、跑 cutscene(可含選項)。
+// 收場由腳本的 do 拍呼叫：eventResolveAdvance(和平離開)/eventResolveRest(變休息)/eventResolveCombat(解鎖開打→一般結算)。
+function startSceneEvent(ev) {
+  eventActive = true; eventCur = ev;
+  if (ev.onEnter) ev.onEnter(runFlags);   // 擲隱藏身分等（吃種子）
+  forcedMap = ev.map;
+  startMission();                          // 在 ev.map 生我方 + 男孩(civ enemySpawn)；scene=COMBAT；cutscene.lock 期間敵不行動
+  cutscene = { beats: ev.scene(runFlags), i: 0, line: null, subtitle: '', lock: true, gate: null };
+}
+function eventResolveAdvance() { cutscene = null; eventActive = false; forcedMap = null; advanceNode(); }       // 和平離開 → 路線圖
+function eventResolveRest() { cutscene = null; eventActive = false; forcedMap = null; enterRest(); }            // 這格變休息關
+function eventResolveCombat() { cutscene = null; eventActive = false; forcedMap = null; for (const e of enemies) if (!e.dead) e.state = 'ENGAGED'; }   // 解鎖：敵人交戰、resume sim；打完走一般結算→advanceNode
 function eventPick(ci) {
   if (eventPhase !== 'CHOICE' || !eventCur) return;
   const c = eventCur.choices[ci]; if (!c || !eventChoosable(c)) return;
@@ -2583,8 +2659,8 @@ function update(dt) {
   updateThreatKnowledge();
   for (const e of enemies) if (!e.dead) enemyTick(e, dt);
 
-  // 4) 軟計時 → 追兵
-  if (simTime > curTimeBudget) {
+  // 4) 軟計時 → 追兵（事件地圖不召追兵）
+  if (!MAP.eventMap && simTime > curTimeBudget) {
     reinforceTimer -= dt;
     if (reinforceTimer <= 0) {
       const e = makeEnemy(nearestNode(ENTRY, false), 'rusher', true);
@@ -3821,7 +3897,7 @@ function toggleEdge(a, b) { const k = edit.edges.findIndex(([x, y]) => (x === a 
 // spawn 工具循環：步兵(衝) → 步兵(抄) → 警犬 → 重機槍 → 霰彈兵 → 移除
 const SPAWN_CYCLE = [{ type: 'grunt' }, { type: 'grunt_flank' }, { type: 'dog' }, { type: 'heavy_lmg' }, { type: 'heavy_shot' }];
 const spawnCycleIdx = (s) => SPAWN_CYCLE.findIndex(c => c.type === s.type);
-const SPAWN_TAG = { grunt: { s: '衝', c: '#ff6b6b' }, grunt_flank: { s: '抄', c: '#ffb454' }, dog: { s: '犬', c: '#ffcf5a' }, heavy_lmg: { s: '機', c: '#c79bff' }, heavy_shot: { s: '霰', c: '#7fb4ff' } };
+const SPAWN_TAG = { grunt: { s: '衝', c: '#ff6b6b' }, grunt_flank: { s: '抄', c: '#ffb454' }, dog: { s: '犬', c: '#ffcf5a' }, heavy_lmg: { s: '機', c: '#c79bff' }, heavy_shot: { s: '霰', c: '#7fb4ff' }, civ: { s: '民', c: '#7fd0a0' } };
 const spawnInfo = (s) => s.type ? (SPAWN_TAG[s.type] || { s: '?', c: '#c07bff' }) : (s.personality === 'flanker' ? { s: 'F', c: '#ffb454' } : { s: 'R', c: '#ff6b6b' });
 function cycleSpawn(i) {
   const s = edit.enemySpawns.find(s => s.nodeId === i);
