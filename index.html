@@ -1301,7 +1301,10 @@ function selectNode(id) {
 function advanceNode() {
   if (roadCurrent != null) roadCompleted.add(roadCurrent);
   const succ = roadCurrent != null ? roadAdj[roadCurrent] : [];
-  if (!succ || succ.length === 0) { scene = 'RUNWIN'; metaOnRunEnd(true); }   // 走完路線＝勝：局外結算(情報點/里程碑)
+  if (!succ || succ.length === 0) {   // 走完路線＝勝
+    if (finaleActive) { resolveFinale(true); return; }   // 最終真相挑戰：走完整條＝真結局＋解 Siren
+    scene = 'RUNWIN'; metaOnRunEnd(true);   // 一般 run：局外結算(情報點/里程碑)
+  }
   else { roadAvailable = succ.slice(); scene = 'MAP'; }
   releasePointer();
 }
@@ -1342,12 +1345,13 @@ function endMission() {
   if (fromSandbox) { fromSandbox = false; forcedMap = null; sandboxLast = { extracted: players.filter(p => p.state === 'EXTRACTED').length, dead: players.filter(p => p.state === 'DEAD').length, total: players.length }; if (playtestMode) { playtestMode = false; try { location.href = 'editor.html'; } catch (e) {} return; } enterSandbox(); return; }
   if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
   if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
-  if (finaleActive) { resolveFinale(); return; }   // 最終真相挑戰：撤出≥1＝勝→真結局＋最後解鎖；否則 Bad End。兩者播完回選單繼續玩
   const survivors = players.filter(p => p.state === 'EXTRACTED');
   const fileSafe = survivors.some(p => p.hasFile);   // 機密檔案必須由「撤出成功」的人帶出，否則整局失敗（躺地上/隨陣亡者沒了都算遺失）
   lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe };
-  if (survivors.length >= 1 && fileSafe) { roster = survivors.map(rosterFromPlayer); missionIndex++; enterSettle(); }   // 勝利→戰果結算(挑人升階)→路線圖
-  else { scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; metaOnRunEnd(false); releasePointer(); }   // 失敗也結算局外進度
+  const win = survivors.length >= 1 && (finaleActive || fileSafe);   // 最終挑戰不啟用檔案機制＝撤出≥1 即過關（繼續跑路線）
+  if (win) { roster = survivors.map(rosterFromPlayer); missionIndex++; enterSettle(); return; }   // 勝利→戰果結算(挑人升階)→路線圖
+  if (finaleActive) { resolveFinale(false); return; }   // 最終挑戰全滅＝Bad End（不走一般 RUNEND）
+  scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; metaOnRunEnd(false); releasePointer();   // 一般 run 失敗：局外結算
 }
 
 /* =====================================================================
@@ -4540,7 +4544,7 @@ function drawMenu() {
     { label: '總部', desc: '花情報點解鎖內容 · 看戰況進度', fn: () => enterHQ() },
     { label: '地圖編輯器', desc: '開啟 editor.html（可測試戰鬥）', fn: () => { try { location.href = 'editor.html'; } catch (e) {} } },
   ];
-  if (meta.revealSeen) items.splice(1, 0, { label: '最終潛入 ▸', desc: meta.finaleWon ? '真相挑戰（已通過 · 可再戰）' : '真相挑戰（鐵人 · 只此一場）', fn: () => enterFinaleSetup(), hot: true });   // 揭示後出現
+  if (meta.revealSeen) items.splice(1, 0, { label: '最終潛入 ▸', desc: meta.finaleWon ? '真相挑戰（已通過 · 可再戰）' : '真相挑戰（鐵人 · 一整輪 run）', fn: () => enterFinaleSetup(), hot: true });   // 揭示後出現
   const bw = 420, bh = 56, gap = 14, x = cv.width / 2 - bw / 2; let y = 190;
   for (const it of items) {
     const hover = mouse.mx >= x && mouse.mx <= x + bw && mouse.my >= y && mouse.my <= y + bh;
@@ -4658,23 +4662,26 @@ function drawEnding() {
 
 const seedFromStr = (str) => { let h = 2166136261 >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
 function enterFinaleSetup() { finaleSeedBuf = ''; scene = 'FINALE'; releasePointer(); }
-function startFinale(seedStr) {   // 鐵人：用目前解鎖狀態組隊、單張高潮關、無路線圖/補給/結算
-    srandSeed((seedStr && seedStr.length) ? seedFromStr(seedStr) : Math.floor(Math.random() * 0xFFFFFFFF));
-    runFlags = {}; pendingEvents = []; eventSeen = []; runStats = { events: 0, kia: 0 };
-    warehouse = []; backpack = []; drops = [];
-    ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = WEAPONS[id].silent ? CONFIG.ammo.subsonicStart : CONFIG.ammo.stockStart;
-    roster = baseRoster(); missionIndex = 0;
-    if (hasSiren()) roster[0].weaponId = 'siren';   // 已解鎖＝領隊直接配 Siren（重挑戰時用得到）
-    result = null; lastSummary = null; loseReason = ''; fileDrop = null;
-    finaleActive = true; forcedMap = 'finale';
-    startMission();
+// 最終真相挑戰＝正式打一整條路線的 run（鐵人、用目前解鎖成果、可輸入種子）。
+// 跳過序章直接進路線圖；走完整條＝真結局＋解 Siren，途中 run 失敗＝Bad End（皆回選單，無刪檔）。
+function startFinale(seedStr) {
+  srandSeed((seedStr && seedStr.length) ? seedFromStr(seedStr) : Math.floor(Math.random() * 0xFFFFFFFF));
+  runFlags = {}; pendingEvents = []; eventSeen = []; runStats = { events: 0, kia: 0 };
+  warehouse = []; backpack = []; drops = []; grantStartingGear();
+  ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = WEAPONS[id].silent ? CONFIG.ammo.subsonicStart : CONFIG.ammo.stockStart;
+  roster = baseRoster(); missionIndex = 0;
+  if (hasSiren()) roster[0].weaponId = 'siren';   // 已解鎖＝領隊直接配 Siren
+  restSel = null;
+  roadCompleted = new Set(); roadCurrent = null; roadAvailable = ROADMAP.start.slice();   // 重置路線圖（同 initRun，但不播序章）
+  result = null; lastSummary = null; loseReason = ''; fileDrop = null;
+  finaleActive = true; forcedMap = null;
+  scene = 'MAP'; releasePointer();   // 直接進路線圖開始 run
 }
 function grantFinaleUnlock() { meta.finaleWon = true; meta.unlocked.weapon.siren = true; }   // 最後解鎖＝Siren（解鎖後每場自動入倉庫）
 const hasSiren = () => !!(meta.unlocked && meta.unlocked.weapon && meta.unlocked.weapon.siren);
 function grantStartingGear() { if (hasSiren()) warehouse.push({ kind: 'weapon', id: 'siren' }); }   // 已解鎖的固定起始裝備：每場開局自動進倉庫（休息關可配裝）
-function resolveFinale() {   // 由 endMission 呼叫：撤出≥1＝勝
+function resolveFinale(won) {   // 由 advanceNode(走完路線＝勝) / endMission(全滅＝敗) 呼叫
   finaleActive = false; forcedMap = null;
-  const won = players.some(p => p.state === 'EXTRACTED');
   if (won) { grantFinaleUnlock(); saveMeta(); playEnding(FINALE_TRUE_END, () => goMenu(), '真結局'); }
   else { playEnding(FINALE_BAD_END, () => goMenu(), 'BAD END'); }
 }
@@ -4691,8 +4698,8 @@ function drawFinaleSetup() {
   ctx.textAlign = 'center';
   ctx.fillStyle = '#ff6b6b'; ctx.font = 'bold 34px Consolas'; ctx.fillText('最終潛入 — THE REAL ONE', cv.width / 2, 150);
   ctx.fillStyle = 'rgba(205,214,224,0.72)'; ctx.font = '14px Consolas';
-  ctx.fillText('鐵人：用你目前解鎖的成果，潛入設施、拿到真目標、殺出來。', cv.width / 2, 186);
-  ctx.fillText('只此一場、不補給、不洗點。成功揭曉真相；失敗也只是回到這裡。', cv.width / 2, 208);
+  ctx.fillText('鐵人：用你目前解鎖的成果，正式打完一整輪 run。', cv.width / 2, 186);
+  ctx.fillText('走完整條路線＝揭曉真相；途中 run 失敗＝結局。輸贏都只是回到這裡。', cv.width / 2, 208);
   const fw = 380, fx = cv.width / 2 - fw / 2, fy = 262, fh = 42;
   ctx.textAlign = 'left'; ctx.fillStyle = '#9fb3c8'; ctx.font = '13px Consolas'; ctx.fillText('種子（留空＝隨機；可打字、Backspace 刪、Enter 開始）', fx, fy - 12);
   ctx.fillStyle = 'rgba(20,26,36,0.95)'; ctx.fillRect(fx, fy, fw, fh);
