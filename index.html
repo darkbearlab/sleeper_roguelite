@@ -414,8 +414,8 @@ const UNIT_NAMES = ['Guard', 'Sentry', 'Ghost', 'Vanguard', 'Warden', 'Wisp', 'E
 const HUE_POOL = [205, 155, 285, 35, 95, 330, 170, 250, 310, 55, 130];
 // 單一 run 的「非戰鬥」隨機都吃一顆種子（招募/事件/搜刮/軍械庫＝可重現）；戰鬥(發散/裝甲/粒子)仍用 Math.random。
 // initRun 重新播種；sandbox 用預設種子。rngPick/weightedPick 的所有呼叫處皆為非戰鬥，故直接改吃 srand。
-let runRngState = (0x9E3779B9) >>> 0;
-function srandSeed(s) { runRngState = (s >>> 0) || 1; }
+let runRngState = (0x9E3779B9) >>> 0, runSeed = 0;
+function srandSeed(s) { runSeed = (s >>> 0); runRngState = runSeed || 1; }
 function srand() {   // mulberry32
   runRngState = (runRngState + 0x6D2B79F5) | 0;
   let t = Math.imul(runRngState ^ (runRngState >>> 15), 1 | runRngState);
@@ -1397,6 +1397,7 @@ function beatEnter(cs, b) {
   else if (b.kind === 'wait') { cs.lock = true; }
   else if (b.kind === 'shoot') { cs.lock = true; cs.line = null; cs.subtitle = b.text || '按下左鍵攻擊'; }
   else if (b.kind === 'gate') { cs.lock = false; cs.gate = b.on; cs.line = null; if (b.text != null) cs.subtitle = b.text; }
+  else if (b.kind === 'choice') { cs.lock = true; cs.advance = false; cs.choice = b.options || []; cs.choicePick = null; cs.line = b.text ? { text: b.text, pos: b.pos } : null; }   // 對話分歧：列選項、按數字鍵選
 }
 function beatDone(cs, b, dt) {
   switch (b.kind) {
@@ -1417,6 +1418,17 @@ function beatDone(cs, b, dt) {
         damageUnit(v, 999, 1, angTo(v.pos, p.pos));
       }
       return cs.victim.dead;
+    }
+    case 'choice': {   // 等玩家選；選了→套 fn/set/queue、把該選項的 then 節拍接到後面、續播
+      if (cs.choicePick == null) return false;
+      const opt = b.options[cs.choicePick]; cs.choicePick = null; cs.choice = null; cs.line = null;
+      if (opt) {
+        if (opt.fn) opt.fn();
+        if (opt.set) for (const k in opt.set) setFlag(k, opt.set[k]);
+        if (opt.queue) for (const id of opt.queue) pendingEvents.push(id);
+        if (opt.then && opt.then.length) cs.beats.splice(cs.i + 1, 0, ...opt.then);
+      }
+      return true;
     }
     case 'gate': return gateSatisfied(b.on);
     default: return true;
@@ -2422,6 +2434,7 @@ cv.addEventListener('mousedown', e => {
   if (scene === 'EDITOR') { if (e.button === 2) editorEraseAt(snapPt({ x: mouse.mx, y: mouse.my })); else editorMouseDown(); return; }
   if (scene !== 'COMBAT' || !pointerLocked) return;
   if (cutscene && cutscene.lock) {   // 演出：有對白→左鍵續播；無對白(處決拍)→放行 mouse.down 給 shoot 拍讀取
+    if (cutscene.choice) return;     // 對話分歧用數字鍵選，吞掉點擊
     if (cutscene.line) { if (e.button === 0) cutscene.advance = true; return; }
     if (e.button === 0) mouse.down = true;
     return;
@@ -2493,7 +2506,8 @@ window.addEventListener('keydown', e => {
 
   // --- COMBAT ---
   if (introActive && k === 'escape') { skipIntro(); e.preventDefault(); return; }   // 第0關：Esc 跳過演出（休息關仍進）
-  if (cutscene && cutscene.lock) {   // 演出鎖控制：只接受對白續播，其餘戰鬥鍵封鎖
+  if (cutscene && cutscene.lock) {   // 演出鎖控制：只接受對白續播/選項，其餘戰鬥鍵封鎖
+    if (cutscene.choice) { const n = parseInt(k, 10); if (n >= 1 && n <= cutscene.choice.length) cutscene.choicePick = n - 1; e.preventDefault(); return; }   // 對話分歧：數字鍵選
     if ((k === ' ' || k === 'enter') && cutscene.line) { cutscene.advance = true; e.preventDefault(); }
     return;
   }
@@ -2687,6 +2701,19 @@ function drawCutscene() {
     const p = cs.line.pos ? cs.line.pos() : null;
     if (p) drawSpeechBubble(w2s(p), cs.line.text);   // 對話泡：說話者頭頂、不顯姓名
   }
+  if (cs.choice) {   // 對話分歧：畫面下方列選項（按數字鍵選）
+    ctx.textAlign = 'center'; ctx.font = '13px Consolas';
+    ctx.fillStyle = 'rgba(205,214,224,0.7)'; ctx.fillText('按數字鍵選擇', cv.width / 2, cv.height - 24 - cs.choice.length * 40);
+    cs.choice.forEach((o, i) => {
+      const w = Math.max(280, ctx.measureText(o.label).width + 60), x = cv.width / 2 - w / 2, y = cv.height - 16 - (cs.choice.length - i) * 40;
+      ctx.fillStyle = 'rgba(20,16,30,0.92)'; ctx.fillRect(x, y, w, 34);
+      ctx.lineWidth = 1.6; ctx.strokeStyle = 'rgba(170,140,220,0.85)'; ctx.strokeRect(x, y, w, 34);
+      ctx.fillStyle = '#c9a0ff'; ctx.font = 'bold 14px Consolas'; ctx.textAlign = 'left'; ctx.fillText('[' + (i + 1) + ']', x + 12, y + 22);
+      ctx.fillStyle = '#e6dcff'; ctx.font = '14px Consolas'; ctx.fillText(o.label, x + 44, y + 22);
+      ctx.textAlign = 'center';
+    });
+    ctx.textAlign = 'left';
+  }
   if (introActive) {   // 跳過提示（右上角）
     ctx.fillStyle = 'rgba(205,214,224,0.5)'; ctx.font = '11px Consolas'; ctx.textAlign = 'right';
     ctx.fillText('Esc：跳過演出', cv.width - 14, 18); ctx.textAlign = 'left';
@@ -2722,6 +2749,14 @@ function drawSpeechBubble(s, text) {
   ctx.beginPath(); ctx.moveTo(tailX - 7, tipY); ctx.lineTo(tailX + 7, tipY); ctx.lineTo(tailX, tipY + dir * 10); ctx.closePath(); ctx.fill();
   ctx.fillStyle = '#e6edf3'; ctx.textAlign = 'center';
   lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + pad + 14 + i * lh));
+  ctx.textAlign = 'left';
+}
+// 角落淡色種子標記（本局非戰鬥 RNG 種子；可供重現/分享）
+function drawSeedTag() {
+  if (!cv || !ctx || !runSeed) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = 'rgba(150,162,175,0.22)'; ctx.font = '10px Consolas'; ctx.textAlign = 'left';
+  ctx.fillText('seed ' + (runSeed >>> 0), 8, cv.height - 8);
   ctx.textAlign = 'left';
 }
 // （備用）舊版底部對話框＋姓名，改用對話泡後不再呼叫；保留供需要時切回
@@ -4303,6 +4338,7 @@ function frame(now) {
     while (acc >= FIXED) { update(FIXED); acc -= FIXED; }
   }
   draw();
+  drawSeedTag();   // 角落淡色顯示本局種子（疊在所有場景之上）
   requestAnimationFrame(frame);
 }
 
