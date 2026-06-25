@@ -254,6 +254,36 @@ const EQUIPMENT = {
 const EQUIP_IDS = Object.keys(EQUIPMENT);
 const LOOT_EQUIP_IDS = EQUIP_IDS.slice();
 
+/* =====================================================================
+   局外進度（meta，跨 run 持久；橫向解鎖為主，不破壞局內平衡）。
+   一開始基礎內容全可用；未來新內容掛進 UNLOCKS：里程碑解 archetype/技能、情報點解 武器/裝備。
+   解鎖只是「進池」，遊戲中仍 RNG 取得。鉤子先做、內容之後慢慢加。localStorage 持久。
+   ===================================================================== */
+CONFIG.meta = { intelPerMission: 10, intelWin: 50 };   // 結算給的情報點（面板可調）
+const META_KEY = 'sleeper_meta_v1';
+let meta = { intel: 0, unlocked: { weapon: {}, equip: {}, archetype: {}, ability: {} }, stats: { runs: 0, wins: 0, missions: 0, winArch: {} } };
+function normalizeMeta() { if (!meta || typeof meta !== 'object') meta = {}; meta.intel = meta.intel || 0; meta.unlocked = meta.unlocked || {}; for (const k of ['weapon', 'equip', 'archetype', 'ability']) meta.unlocked[k] = meta.unlocked[k] || {}; meta.stats = meta.stats || {}; meta.stats.winArch = meta.stats.winArch || {}; }
+function loadMeta() { try { const s = JSON.parse(localStorage.getItem(META_KEY)); if (s) meta = s; } catch (e) {} normalizeMeta(); }
+function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(meta)); } catch (e) {} }
+// 解鎖登錄：未來新內容掛這（base 內容不列＝永遠可用）。via:'milestone'(cond) / 'intel'(cost)；name 給 HQ 顯示。
+const UNLOCKS = [
+  // 範例（內容之後填）：
+  // { kind: 'archetype', id: 'sniper', via: 'milestone', cond: s => (s.wins || 0) >= 1, name: '狙擊手' },
+  // { kind: 'weapon',    id: 'ar',     via: 'intel',     cost: 80, name: '突擊步槍' },
+];
+const unlockDef = (kind, id) => UNLOCKS.find(u => u.kind === kind && u.id === id);
+const isAvailable = (kind, id) => { const u = unlockDef(kind, id); return !u || !!(meta.unlocked[kind] && meta.unlocked[kind][id]); };   // 非解鎖品(base)永遠可用
+const availPool = (kind, ids) => { const p = ids.filter(id => isAvailable(kind, id)); return p.length ? p : ids; };   // 過濾未解鎖；空了保底回全集(不崩)
+function checkMilestoneUnlocks() { let any = false; for (const u of UNLOCKS) if (u.via === 'milestone' && u.cond && u.cond(meta.stats) && !meta.unlocked[u.kind][u.id]) { meta.unlocked[u.kind][u.id] = true; any = true; } return any; }
+function unlockWithIntel(kind, id) { const u = unlockDef(kind, id); if (!u || u.via !== 'intel' || meta.unlocked[kind][id] || meta.intel < u.cost) return false; meta.intel -= u.cost; meta.unlocked[kind][id] = true; saveMeta(); return true; }
+function metaOnRunEnd(won) {   // run 結束結算：情報點 + stats + 里程碑自動解鎖 + 存檔
+  meta.stats.runs = (meta.stats.runs || 0) + 1;
+  meta.stats.missions = (meta.stats.missions || 0) + (typeof missionIndex === 'number' ? missionIndex : 0);
+  meta.intel += CONFIG.meta.intelPerMission * (typeof missionIndex === 'number' ? missionIndex : 0) + (won ? CONFIG.meta.intelWin : 0);
+  if (won) { meta.stats.wins = (meta.stats.wins || 0) + 1; for (const r of (roster || [])) if (r && r.archetypeId) meta.stats.winArch[r.archetypeId] = (meta.stats.winArch[r.archetypeId] || 0) + 1; }
+  checkMilestoneUnlocks(); saveMeta();
+}
+
 // 道具（一次性，戰鬥中按 C 觸發、用完消失）。
 //   heal: 立即補血 / refill: 補滿彈夾+備彈 / buff: { dur, moveMul, fireRateMul } / grenade: 360°散射一批彈丸
 //   grenade＝不用新系統：朝 360° 短距離噴一批子彈(像霰彈)，威力＝被幾顆打中(中心多顆/遠處稀疏→自然衰減)；
@@ -428,7 +458,7 @@ function makeRecruit(used) {
   let name = rngPick(UNIT_NAMES);
   if (used) { let g = 0; while (used.has(name) && g++ < 50) name = rngPick(UNIT_NAMES); used.add(name); }
   return { name, hue: rngPick(HUE_POOL), strength: rngPick([0.8, 1.0, 1.2]),
-    weaponId: rngPick(RECRUIT_WEAPON_IDS), abilityId: 'heal', archetypeId: rngPick(ARCHETYPE_IDS),
+    weaponId: rngPick(availPool('weapon', RECRUIT_WEAPON_IDS)), abilityId: 'heal', archetypeId: rngPick(availPool('archetype', ARCHETYPE_IDS)),
     weaponId2: FLOOR_WEAPON, allocatedAmmo2: 0,   // 副武器（預設 pistol 底線後備；X 換槍）
     bonusMaxHp: 0, hp: CONFIG.unitHp, allocatedAmmo: CONFIG.ammo.defaultAlloc, disciplineOverride: null,
     tier: 0, passives: [],            // 升階等級(0~3)＋已學被動id；戰果結算二選一累積
@@ -1156,7 +1186,7 @@ function selectNode(id) {
 function advanceNode() {
   if (roadCurrent != null) roadCompleted.add(roadCurrent);
   const succ = roadCurrent != null ? roadAdj[roadCurrent] : [];
-  if (!succ || succ.length === 0) scene = 'RUNWIN';
+  if (!succ || succ.length === 0) { scene = 'RUNWIN'; metaOnRunEnd(true); }   // 走完路線＝勝：局外結算(情報點/里程碑)
   else { roadAvailable = succ.slice(); scene = 'MAP'; }
   releasePointer();
 }
@@ -1201,7 +1231,7 @@ function endMission() {
   const fileSafe = survivors.some(p => p.hasFile);   // 機密檔案必須由「撤出成功」的人帶出，否則整局失敗（躺地上/隨陣亡者沒了都算遺失）
   lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe };
   if (survivors.length >= 1 && fileSafe) { roster = survivors.map(rosterFromPlayer); missionIndex++; enterSettle(); }   // 勝利→戰果結算(挑人升階)→路線圖
-  else { scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; releasePointer(); }
+  else { scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; metaOnRunEnd(false); releasePointer(); }   // 失敗也結算局外進度
 }
 
 /* =====================================================================
@@ -1306,7 +1336,7 @@ function applyEventOutcome(o, mi) {
     case 'nothing': return '離開了，什麼也沒發生';
     case 'ammo': { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * (o.big ? 6 : 3); ammoStock[id] = (ammoStock[id] || 0) + amt; return `${WEAPONS[id].name}彈 +${amt}`; }
     case 'weapon': { const id = o.id || rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); return `取得武器 ${WEAPONS[id].name}`; }
-    case 'equip': { const id = o.id || rngPick(LOOT_EQUIP_IDS); warehouse.push({ kind: 'equip', id }); return `取得裝備 ${EQUIPMENT[id].name}`; }
+    case 'equip': { const id = o.id || rngPick(availPool('equip', LOOT_EQUIP_IDS)); warehouse.push({ kind: 'equip', id }); return `取得裝備 ${EQUIPMENT[id].name}`; }
     case 'item': { const id = o.id || rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); return `取得道具 ${ITEMS[id].name}`; }
     case 'loot': { const out = []; for (let i = 0; i < (o.n || 1); i++) out.push(applyEventOutcome(rngPick([{ type: 'weapon' }, { type: 'equip' }, { type: 'item' }]))); return out.join('、'); }
     case 'heal': { for (const r of roster) r.hp = Math.min(rmaxhp(r), (r.hp || 0) + (o.amt || 20)); return `全隊回復 ${o.amt || 20}HP`; }
@@ -1370,8 +1400,8 @@ function eventAdvance() { advanceNode(); }
 function makeIntroCast() {
   const used = new Set();
   const prot = makeRecruit(used); prot.weaponId = FLOOR_WEAPON;                 // 主角：側槍(底線)
-  const g1 = makeRecruit(used); g1.weaponId = rngPick(RECRUIT_WEAPON_IDS);      // 守衛：帶初始武器
-  const g2 = makeRecruit(used); g2.weaponId = rngPick(RECRUIT_WEAPON_IDS);
+  const g1 = makeRecruit(used); g1.weaponId = rngPick(availPool('weapon', RECRUIT_WEAPON_IDS));      // 守衛：帶初始武器
+  const g2 = makeRecruit(used); g2.weaponId = rngPick(availPool('weapon', RECRUIT_WEAPON_IDS));
   return [prot, g1, g2];
 }
 function startIntro() {
@@ -1540,7 +1570,7 @@ function skipIntro() {
 const RARITY_WEIGHT = { common: 60, uncommon: 25, rare: 12, epic: 4, legendary: 1 };
 const weaponValue = (W) => W.damage * W.fireRate * (W.range / 400);   // 粗略估值（自動配裝用）
 function weightedPick(ids, weightOf) { const w = ids.map(weightOf); const tot = w.reduce((a, b) => a + b, 0); let r = srand() * tot; for (let i = 0; i < ids.length; i++) { r -= w[i]; if (r <= 0) return ids[i]; } return ids[ids.length - 1]; }   // 非戰鬥(loot)＝吃種子
-const rollLootWeapon = () => weightedPick(LOOT_WEAPON_IDS, id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
+const rollLootWeapon = () => weightedPick(availPool('weapon', LOOT_WEAPON_IDS), id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
 
 // --- 倉庫容量 ---
 const warehouseCap = () => roster.length * CONFIG.loadout.slotsPerMember;
@@ -1551,8 +1581,8 @@ const overCap = () => warehouseUsed() > warehouseCap();
 function enterArmory() { scene = 'ARMORY'; releasePointer(); armoryOffers = rollArmory(CONFIG.loadout.scavengeChoices); }
 function rollArmory(n) {
   const weapon = () => { const id = rollLootWeapon(), W = WEAPONS[id]; return { type: 'weapon', id, label: `武器 · ${W.name}（${W.rarity}）`, color: rarityColor(W.rarity) }; };
-  const equipO = () => { const id = rngPick(LOOT_EQUIP_IDS), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}）`, color: '#9fd0e0' }; };
-  const ability = () => { const id = rngPick(LOOT_ABILITY_IDS), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}`, color: '#c0a0ff' }; };
+  const equipO = () => { const id = rngPick(availPool('equip', LOOT_EQUIP_IDS)), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}）`, color: '#9fd0e0' }; };
+  const ability = () => { const id = rngPick(availPool('ability', LOOT_ABILITY_IDS)), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}`, color: '#c0a0ff' }; };
   const itemO = () => { const id = rngPick(LOOT_ITEM_IDS), I = ITEMS[id]; return { type: 'item', id, label: `道具 · ${I.name}`, color: '#ffd27d' }; };
   const gens = [weapon, equipO, ability, itemO];
   const offers = []; while (offers.length < n) offers.push(rngPick(gens)());
@@ -1593,9 +1623,9 @@ function rollResupply() {
       for (let j = 0; j < k; j++) { const id = rngPick(ids), amt = WEAPONS[id].magazine * (2 + Math.floor(srand() * 3)); ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }
     } else if (seen[c]) { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * 2; ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }   // 同類型重抽→改給彈藥(不重複物品)
     else if (c === 'weapon') { const id = rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); got.push(WEAPONS[id].name); }
-    else if (c === 'equip') { const id = rngPick(LOOT_EQUIP_IDS); warehouse.push({ kind: 'equip', id }); got.push(EQUIPMENT[id].name); }
+    else if (c === 'equip') { const id = rngPick(availPool('equip', LOOT_EQUIP_IDS)); warehouse.push({ kind: 'equip', id }); got.push(EQUIPMENT[id].name); }
     else if (c === 'item') { const id = rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); got.push(ITEMS[id].name); }
-    else if (c === 'ability') { const id = rngPick(LOOT_ABILITY_IDS); warehouse.push({ kind: 'ability', id }); got.push(ABILITIES[id].name); }
+    else if (c === 'ability') { const id = rngPick(availPool('ability', LOOT_ABILITY_IDS)); warehouse.push({ kind: 'ability', id }); got.push(ABILITIES[id].name); }
     seen[c] = true;
   }
   return got;
@@ -4294,6 +4324,9 @@ function drawMenu() {
     menuRects.push({ x, y, w: bw, h: bh, fn: it.fn });
     y += bh + gap;
   }
+  // 局外進度：情報點（角落小字；之後接 HQ 解鎖介面）
+  ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(160,200,230,0.6)'; ctx.font = '13px Consolas';
+  ctx.fillText('情報點 ' + (meta.intel | 0) + (meta.stats && meta.stats.wins ? '　·　通關 ' + meta.stats.wins : ''), cv.width / 2, y + 18);
   ctx.textAlign = 'left';
 }
 
@@ -4429,6 +4462,7 @@ function bootPlaytest() {
   let s = null; try { s = localStorage.getItem('sleeper_playtest'); } catch (e) {}
   if (s) { pendingPlaytestMap = s; playtestMode = true; enterSandbox(); } else goMenu();
 }
+loadMeta();   // 載入局外進度（解鎖/情報點）
 let __q = ''; try { __q = (typeof location !== 'undefined' && location.search) || ''; } catch (e) {}
 if (/[?&]playtest\b/.test(__q)) bootPlaytest();
 else if (/[?&]sandbox\b/.test(__q) && sandboxEl) enterSandbox();
