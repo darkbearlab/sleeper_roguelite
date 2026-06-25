@@ -273,9 +273,39 @@ CONFIG.meta = {
 };
 let runStats = { events: 0, kia: 0 };   // 本局累計：處理過的事件數 / 陣亡人數（initRun 重置）
 let lastIntelBreakdown = null;          // 上一局情報點明細（run-end 畫面顯示）
+
+// 最終真相挑戰：通關 revealWins 次後揭示「這一切是洗腦養成」→ 主選單多「最終潛入」入口（鐵人/選種子）。
+// 成功＝真結局＋最後解鎖；失敗＝Bad End。兩者都只播純文字＋回到挑戰前繼續玩（無刪檔/無軟鎖）。
+CONFIG.finale = { revealWins: 3, linePace: 1.7 };   // 揭示門檻（通關數）；結局每行間隔秒
+const FINALE_REVEAL = [
+  '……醒醒。',
+  '你打過的每一場，都是模擬。',
+  '我們在你腦裡反覆植入同一套訓練，',
+  '直到反射先於思考、忠誠先於懷疑。',
+  '',
+  '沉睡結束了。',
+  '這一次，是真的。',
+];
+const FINALE_TRUE_END = [
+  '機密確認有效。',
+  '撤離的沈睡者被安置、敘勳。',
+  '自此，這個國家握有那個時代最強的抑止力。',
+  '',
+  '授勳之夜，酒杯見底。',
+  '沒有一名沈睡者活著走出宴會廳。',
+  '',
+  '—— For our Father.',
+];
+const FINALE_BAD_END = [
+  '行動失敗。總部遭到清算。',
+  '你成了談判桌上的籌碼，被一筆勾銷。',
+  '持續數十年的沈睡者計畫，到此為止。',
+  '',
+  '（不會有人記得你。）',
+];
 const META_KEY = 'sleeper_meta_v1';
-let meta = { intel: 0, unlocked: { weapon: {}, equip: {}, archetype: {}, ability: {} }, stats: { runs: 0, wins: 0, missions: 0, winArch: {} } };
-function normalizeMeta() { if (!meta || typeof meta !== 'object') meta = {}; meta.intel = meta.intel || 0; meta.unlocked = meta.unlocked || {}; for (const k of ['weapon', 'equip', 'archetype', 'ability']) meta.unlocked[k] = meta.unlocked[k] || {}; meta.stats = meta.stats || {}; meta.stats.winArch = meta.stats.winArch || {}; }
+let meta = { intel: 0, unlocked: { weapon: {}, equip: {}, archetype: {}, ability: {} }, stats: { runs: 0, wins: 0, missions: 0, winArch: {} }, revealSeen: false, finaleWon: false };
+function normalizeMeta() { if (!meta || typeof meta !== 'object') meta = {}; meta.intel = meta.intel || 0; meta.unlocked = meta.unlocked || {}; for (const k of ['weapon', 'equip', 'archetype', 'ability']) meta.unlocked[k] = meta.unlocked[k] || {}; meta.stats = meta.stats || {}; meta.stats.winArch = meta.stats.winArch || {}; meta.revealSeen = !!meta.revealSeen; meta.finaleWon = !!meta.finaleWon; }
 function loadMeta() { try { const s = JSON.parse(localStorage.getItem(META_KEY)); if (s) meta = s; } catch (e) {} normalizeMeta(); }
 function saveMeta() { try { localStorage.setItem(META_KEY, JSON.stringify(meta)); } catch (e) {} }
 // 解鎖登錄：未來新內容掛這（base 內容不列＝永遠可用）。via:'milestone'(cond) / 'intel'(cost)；name 給 HQ 顯示。
@@ -717,6 +747,56 @@ const MAPS = {
     ],
     prisoners: [{ x: 980, y: 480 }],           // 右區門後的俘虜（救出並撤離→入隊）
   },
+  // finale：最終真相挑戰用地圖（沿用 bravo 的可走結構＝保證合法導航，但敵配更硬、無俘虜）。
+  finale: {
+    label: '設施 · 最終潛入',
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 },
+      { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 },
+      { x1: 40, y1: 680, x2: 40, y2: 40 },
+      { x1: 460, y1: 40, x2: 460, y2: 300 },
+      { x1: 460, y1: 420, x2: 460, y2: 680 },
+      { x1: 820, y1: 40, x2: 820, y2: 300 },
+      { x1: 820, y1: 420, x2: 820, y2: 680 },
+    ],
+    doors: [
+      { id: 'd1', x1: 460, y1: 300, x2: 460, y2: 420, open: false },
+      { id: 'd2', x1: 820, y1: 300, x2: 820, y2: 420, open: false },
+    ],
+    lowWalls: [
+      { x1: 600, y1: 360, x2: 700, y2: 360 },
+      { x1: 1000, y1: 420, x2: 1000, y2: 520 },
+    ],
+    buttons: [
+      { id: 'b1', x: 640, y: 150, doorId: 'd2' },
+    ],
+    waypoints: [
+      { id: 0, pos: { x: 150,  y: 360 }, tags: ['patrol', 'spawn'] },
+      { id: 1, pos: { x: 360,  y: 360 }, tags: ['patrol'] },
+      { id: 2, pos: { x: 560,  y: 360 }, tags: ['choke'] },
+      { id: 3, pos: { x: 640,  y: 200 }, tags: ['cover', 'flank'] },
+      { id: 4, pos: { x: 640,  y: 520 }, tags: ['cover', 'flank'] },
+      { id: 5, pos: { x: 740,  y: 360 }, tags: ['choke'] },
+      { id: 6, pos: { x: 940,  y: 360 }, tags: ['vantage'] },
+      { id: 7, pos: { x: 1180, y: 360 }, tags: ['patrol'] },
+    ],
+    edges: [
+      [0, 1], [1, 2], [2, 3], [2, 4], [3, 5], [4, 5], [5, 6], [6, 7],
+    ],
+    entryPoints: [{ x: 110, y: 360 }],
+    extractionPoints: [{ x: 1190, y: 360 }],
+    enemySpawns: [
+      { nodeId: 1, personality: 'rusher' },
+      { nodeId: 2, personality: 'flanker' },
+      { nodeId: 3, type: 'dog' },
+      { nodeId: 4, type: 'heavy_lmg' },
+      { nodeId: 5, type: 'heavy_shot' },
+      { nodeId: 6, type: 'heavy_lmg' },
+      { nodeId: 7, personality: 'flanker' },
+    ],
+    timeBudget: 200,
+  },
   // intro：第0關（序章/教學）。管制室(左) → 控制台 → 出口門(x900) → 守衛廊道 → 撤離(右)。
   // 主角/同僚/守衛由 startIntro 以腳本放置，非 enemySpawns；timeBudget 由 startIntro 設超大（無追兵）。
   intro: {
@@ -1028,6 +1108,9 @@ let result;
 let scene = 'MAP';           // 場景：MAP | COMBAT | REST | RUNEND | RUNWIN | EDITOR
 let curTimeBudget = 90;      // 本場軟計時上限（節點 > 地圖 > 全域預設）
 let forcedMap = null;        // 非 null 時 startMission 強制用此地圖鍵（關卡編輯器試玩用）
+let finaleActive = false;    // 此場戰鬥＝最終真相挑戰（鐵人；結束走 resolveFinale 播結局而非一般結算）
+let endingSeq = null;        // 結局/揭示純文字序列（scene ENDING）：{lines,shown,t,pace,onDone,title}
+let finaleSeedBuf = '', finaleRects = [];   // 最終潛入設定畫面（scene FINALE）的種子輸入緩衝/按鈕
 let fromEditor = false;      // 此場戰鬥由編輯器試玩啟動（結束時返回 EDITOR 而非路線圖）
 let edit = null;             // 編輯中的地圖（同 MAPS 結構；waypoints id===index）
 let editTool = 'wall', editDrag = null, editSelWp = null, editTagBrush = 'patrol', editSnap = 20, editMsg = '', editRects = [];
@@ -1230,9 +1313,9 @@ function startMission() {
   controlledId = 0;
   enemies = []; bullets = []; grenades = []; particles = []; corpses = []; decals = []; soundPings = []; shakeAmt = 0; kickY = 0; hitstopT = 0;
   reservations = new Map(); patrolClaims = new Map(); enemyIdSeq = 1; drops = []; fileDrop = null;
-  if (!fromSandbox && !fromEditor) {   // 機密檔案：本場由 roster 指定的攜帶者背上（保底＝沒人標記就給第一人，檔案不能憑空消失）
+  if (!fromSandbox && !fromEditor && !finaleActive) {   // 機密檔案：本場由 roster 指定的攜帶者背上（保底＝沒人標記就給第一人，檔案不能憑空消失）
     if (!players.some(p => p.hasFile) && players.length) players[0].hasFile = true;
-  } else { for (const p of players) p.hasFile = false; }   // 沙盒/編輯試玩不啟用檔案機制
+  } else { for (const p of players) p.hasFile = false; }   // 沙盒/編輯試玩/最終挑戰不啟用檔案機制（最終＝撤出≥1 即勝）
   prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
   for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type); enemies.push(e); commitReservation(e, e.currentNode); }
   // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
@@ -1251,6 +1334,7 @@ function endMission() {
   if (fromSandbox) { fromSandbox = false; forcedMap = null; sandboxLast = { extracted: players.filter(p => p.state === 'EXTRACTED').length, dead: players.filter(p => p.state === 'DEAD').length, total: players.length }; if (playtestMode) { playtestMode = false; try { location.href = 'editor.html'; } catch (e) {} return; } enterSandbox(); return; }
   if (fromEditor) { fromEditor = false; forcedMap = null; scene = 'EDITOR'; editMsg = '試玩結束 — 回到編輯器'; releasePointer(); return; }
   if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
+  if (finaleActive) { resolveFinale(); return; }   // 最終真相挑戰：撤出≥1＝勝→真結局＋最後解鎖；否則 Bad End。兩者播完回選單繼續玩
   const survivors = players.filter(p => p.state === 'EXTRACTED');
   const fileSafe = survivors.some(p => p.hasFile);   // 機密檔案必須由「撤出成功」的人帶出，否則整局失敗（躺地上/隨陣亡者沒了都算遺失）
   lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe };
@@ -2551,6 +2635,8 @@ cv.addEventListener('click', () => {
   else if (scene === 'RUNEND' || scene === 'RUNWIN') goMenu();
   else if (scene === 'MENU') menuClick(mouse.mx, mouse.my);
   else if (scene === 'HQ') hqClick(mouse.mx, mouse.my);
+  else if (scene === 'FINALE') finaleClick(mouse.mx, mouse.my);
+  else if (scene === 'ENDING') endingAdvance();
   // EDITOR：互動在 mousedown/up 處理（支援拖拉），click 不處理
 });
 // 休息關：命中最後繪製（最上層）的可點區域
@@ -2640,6 +2726,14 @@ window.addEventListener('keydown', e => {
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') goMenu(); return; }
   if (scene === 'MENU') return;   // 主選單以滑鼠點選
   if (scene === 'HQ') { if (k === 'escape' || k === 'backspace') { goMenu(); e.preventDefault(); } return; }   // 總部：Esc/Backspace 回選單，其餘以滑鼠點選
+  if (scene === 'ENDING') { if (k === ' ' || k === 'enter') { endingAdvance(); e.preventDefault(); } return; }   // 結局/揭示：空白/Enter 加速或繼續
+  if (scene === 'FINALE') {   // 最終潛入設定：打字輸入種子、Enter 開始、Esc 返回
+    if (k === 'escape') goMenu();
+    else if (k === 'backspace') finaleSeedBuf = finaleSeedBuf.slice(0, -1);
+    else if (k === 'enter') startFinale(finaleSeedBuf);
+    else if (k.length === 1 && /[a-z0-9]/.test(k) && finaleSeedBuf.length < 16) finaleSeedBuf += k;
+    e.preventDefault(); return;
+  }
   if (scene === 'SETTLE') { if (k === 'enter' || k === ' ') { if (settlePhase === 'PICK') settleSkip(); else if (settlePhase === 'DONE') settleAdvance(); } return; }   // 結算以滑鼠點選；Enter 略過/前進
   if (scene === 'EVENT') { if ((k === 'enter' || k === ' ') && eventPhase === 'DONE') eventAdvance(); return; }   // 事件以滑鼠點選；Enter 前進
   if (scene === 'SANDBOX') return;   // 設定畫面以 DOM 表單操作，不接遊戲鍵
@@ -2775,6 +2869,8 @@ function draw() {
 
   if (scene === 'MENU') { drawMenu(); return; }
   if (scene === 'HQ') { drawHQ(); return; }
+  if (scene === 'FINALE') { drawFinaleSetup(); return; }
+  if (scene === 'ENDING') { drawEnding(); return; }
   if (scene === 'SANDBOX') { drawSandboxBackdrop(); return; }
   if (scene === 'MAP') { drawRoadmap(); return; }
   if (scene === 'EDITOR') { drawEditor(); return; }
@@ -4342,9 +4438,16 @@ function sandboxMsg(t) { if (sandboxMsgEl) sandboxMsgEl.textContent = t || ''; }
 
 /* ===== 主選單（進入點）：戰役 / 自由戰鬥 / 地圖編輯器 ===== */
 function goMenu() {
-  scene = 'MENU'; releasePointer();
-  if (typeof cutscene !== 'undefined') cutscene = null; introActive = false;
+  if (typeof cutscene !== 'undefined') cutscene = null; introActive = false; finaleActive = false;
   if (sandboxEl) sandboxEl.classList.remove('open');
+  releasePointer();
+  // 通關達門檻＝下次回選單先播一次「真相揭示」純文字，再進選單（之後主選單多「最終潛入」入口）。
+  if ((meta.stats.wins || 0) >= CONFIG.finale.revealWins && !meta.revealSeen) {
+    meta.revealSeen = true; saveMeta();
+    playEnding(FINALE_REVEAL, () => { scene = 'MENU'; releasePointer(); }, '真相');
+    return;
+  }
+  scene = 'MENU';
 }
 function menuClick(x, y) { for (const r of menuRects) if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.fn(); return; } }
 function drawMenu() {
@@ -4359,12 +4462,14 @@ function drawMenu() {
     { label: '總部', desc: '花情報點解鎖內容 · 看戰況進度', fn: () => enterHQ() },
     { label: '地圖編輯器', desc: '開啟 editor.html（可測試戰鬥）', fn: () => { try { location.href = 'editor.html'; } catch (e) {} } },
   ];
+  if (meta.revealSeen) items.splice(1, 0, { label: '最終潛入 ▸', desc: meta.finaleWon ? '真相挑戰（已通過 · 可再戰）' : '真相挑戰（鐵人 · 只此一場）', fn: () => enterFinaleSetup(), hot: true });   // 揭示後出現
   const bw = 420, bh = 56, gap = 14, x = cv.width / 2 - bw / 2; let y = 190;
   for (const it of items) {
     const hover = mouse.mx >= x && mouse.mx <= x + bw && mouse.my >= y && mouse.my <= y + bh;
-    ctx.fillStyle = hover ? 'rgba(127,227,255,0.18)' : 'rgba(20,26,36,0.92)'; ctx.fillRect(x, y, bw, bh);
-    ctx.lineWidth = 2; ctx.strokeStyle = hover ? '#7fe3ff' : '#2a3442'; ctx.strokeRect(x, y, bw, bh);
-    ctx.textAlign = 'left'; ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 21px Consolas'; ctx.fillText(it.label, x + 22, y + 26);
+    const accent = it.hot ? '#ff6b6b' : '#7fe3ff';
+    ctx.fillStyle = hover ? (it.hot ? 'rgba(255,107,107,0.16)' : 'rgba(127,227,255,0.18)') : 'rgba(20,26,36,0.92)'; ctx.fillRect(x, y, bw, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = hover ? accent : (it.hot ? 'rgba(255,107,107,0.55)' : '#2a3442'); ctx.strokeRect(x, y, bw, bh);
+    ctx.textAlign = 'left'; ctx.fillStyle = it.hot ? '#ffd0d0' : '#e6edf3'; ctx.font = 'bold 21px Consolas'; ctx.fillText(it.label, x + 22, y + 26);
     ctx.fillStyle = 'rgba(205,214,224,0.6)'; ctx.font = '13px Consolas'; ctx.fillText(it.desc, x + 22, y + 45);
     menuRects.push({ x, y, w: bw, h: bh, fn: it.fn });
     y += bh + gap;
@@ -4440,6 +4545,82 @@ function drawHQ() {
   hqRects.push({ x: bx, y: by, w: bbw, h: bbh, fn: () => goMenu() });
   ctx.textAlign = 'left';
 }
+
+// ───────── 最終真相挑戰：揭示/結局純文字（scene ENDING）＋ 最終潛入設定（scene FINALE） ─────────
+function playEnding(lines, onDone, title) {   // 黑底白字、逐行出、可加速；播完跑 onDone
+  endingSeq = { lines: lines.slice(), shown: 0, t: 0, pace: CONFIG.finale.linePace, onDone: onDone || (() => goMenu()), title: title || '' };
+  scene = 'ENDING'; releasePointer();
+}
+function endingTick(dt) { const s = endingSeq; if (!s) return; if (s.shown < s.lines.length) { s.t += dt; if (s.t >= s.pace) { s.t = 0; s.shown++; } } }
+function endingAdvance() {   // 按鈕/點擊/空白：未出完→全部立刻出完(加速)；已出完→結束(onDone)
+  const s = endingSeq; if (!s) return;
+  if (s.shown < s.lines.length) { s.shown = s.lines.length; s.t = s.pace; }
+  else { const done = s.onDone; endingSeq = null; if (done) done(); }
+}
+function drawEnding() {
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height);
+  const s = endingSeq; if (!s) return;
+  ctx.textAlign = 'center';
+  const lh = 40, top = cv.height / 2 - (s.lines.length * lh) / 2;
+  for (let i = 0; i < s.shown; i++) {
+    const line = s.lines[i]; if (line === '') continue;
+    let a = 1;
+    if (i === s.shown - 1) a = Math.min(1, s.t / (s.pace * 0.5) + 0.18);   // 最新一行漸顯
+    ctx.fillStyle = 'rgba(236,239,243,' + a.toFixed(3) + ')';
+    ctx.font = (line.indexOf('—') === 0) ? 'italic 23px Consolas' : '22px Consolas';
+    ctx.fillText(line, cv.width / 2, top + i * lh + 28);
+  }
+  const allOut = s.shown >= s.lines.length;
+  ctx.fillStyle = 'rgba(150,160,175,0.5)'; ctx.font = '13px Consolas';
+  ctx.fillText(allOut ? '點擊／空白鍵 — 繼續 ▸' : '點擊／空白鍵 — 加速 ▸', cv.width / 2, cv.height - 38);
+  ctx.textAlign = 'left';
+}
+
+const seedFromStr = (str) => { let h = 2166136261 >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+function enterFinaleSetup() { finaleSeedBuf = ''; scene = 'FINALE'; releasePointer(); }
+function startFinale(seedStr) {   // 鐵人：用目前解鎖狀態組隊、單張高潮關、無路線圖/補給/結算
+    srandSeed((seedStr && seedStr.length) ? seedFromStr(seedStr) : Math.floor(Math.random() * 0xFFFFFFFF));
+    runFlags = {}; pendingEvents = []; eventSeen = []; runStats = { events: 0, kia: 0 };
+    warehouse = []; backpack = []; drops = [];
+    ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = WEAPONS[id].silent ? CONFIG.ammo.subsonicStart : CONFIG.ammo.stockStart;
+    roster = baseRoster(); missionIndex = 0;
+    result = null; lastSummary = null; loseReason = ''; fileDrop = null;
+    finaleActive = true; forcedMap = 'finale';
+    startMission();
+}
+function grantFinaleUnlock() { meta.finaleWon = true; /* 最後解鎖：機制保留，內容 placeholder（之後挑武器/archetype 填入） */ }
+function resolveFinale() {   // 由 endMission 呼叫：撤出≥1＝勝
+  finaleActive = false; forcedMap = null;
+  const won = players.some(p => p.state === 'EXTRACTED');
+  if (won) { grantFinaleUnlock(); saveMeta(); playEnding(FINALE_TRUE_END, () => goMenu(), '真結局'); }
+  else { playEnding(FINALE_BAD_END, () => goMenu(), 'BAD END'); }
+}
+function finaleBtn(x, y, w, h, label, accent, fn) {
+  const hov = mouse.mx >= x && mouse.mx <= x + w && mouse.my >= y && mouse.my <= y + h;
+  ctx.fillStyle = hov ? 'rgba(255,255,255,0.12)' : 'rgba(24,30,40,0.95)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.6; ctx.strokeStyle = hov ? accent : 'rgba(120,135,155,0.6)'; ctx.strokeRect(x, y, w, h);
+  ctx.textAlign = 'center'; ctx.fillStyle = accent; ctx.font = 'bold 16px Consolas'; ctx.fillText(label, x + w / 2, y + h / 2 + 6);
+  finaleRects.push({ x, y, w, h, fn });
+}
+function drawFinaleSetup() {
+  finaleRects = [];
+  ctx.fillStyle = '#07090d'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff6b6b'; ctx.font = 'bold 34px Consolas'; ctx.fillText('最終潛入 — THE REAL ONE', cv.width / 2, 150);
+  ctx.fillStyle = 'rgba(205,214,224,0.72)'; ctx.font = '14px Consolas';
+  ctx.fillText('鐵人：用你目前解鎖的成果，潛入設施、拿到真目標、殺出來。', cv.width / 2, 186);
+  ctx.fillText('只此一場、不補給、不洗點。成功揭曉真相；失敗也只是回到這裡。', cv.width / 2, 208);
+  const fw = 380, fx = cv.width / 2 - fw / 2, fy = 262, fh = 42;
+  ctx.textAlign = 'left'; ctx.fillStyle = '#9fb3c8'; ctx.font = '13px Consolas'; ctx.fillText('種子（留空＝隨機；可打字、Backspace 刪、Enter 開始）', fx, fy - 12);
+  ctx.fillStyle = 'rgba(20,26,36,0.95)'; ctx.fillRect(fx, fy, fw, fh);
+  ctx.lineWidth = 1.6; ctx.strokeStyle = 'rgba(127,227,255,0.6)'; ctx.strokeRect(fx, fy, fw, fh);
+  ctx.fillStyle = '#e6edf3'; ctx.font = '18px Consolas'; ctx.fillText(finaleSeedBuf || '_', fx + 14, fy + 27);
+  const bw = 180, bh = 46, gap = 26, by = 348;
+  finaleBtn(cv.width / 2 - bw - gap / 2, by, bw, bh, '開始挑戰 ▸', '#ff6b6b', () => startFinale(finaleSeedBuf));
+  finaleBtn(cv.width / 2 + gap / 2, by, bw, bh, '返回', '#7fe3ff', () => goMenu());
+  ctx.textAlign = 'left';
+}
+function finaleClick(mx, my) { for (const r of finaleRects) if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) { r.fn(); return; } }
 
 function enterSandbox() {
   scene = 'SANDBOX'; fromSandbox = false; releasePointer();
@@ -4563,6 +4744,7 @@ function frame(now) {
     acc += delta;
     while (acc >= FIXED) { update(FIXED); acc -= FIXED; }
   }
+  if (scene === 'ENDING') endingTick(delta);   // 結局/揭示逐行出（非 COMBAT，update 不跑，這裡用真實 delta 計時）
   draw();
   drawSeedTag();   // 角落淡色顯示本局種子（疊在所有場景之上）
   requestAnimationFrame(frame);
