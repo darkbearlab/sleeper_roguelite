@@ -412,7 +412,17 @@ const ENEMY_TYPE_IDS = Object.keys(ENEMY_TYPES);
 // 招募隨機（全部都隨機、無固定基準）：名字/色相/感知/武器/個性
 const UNIT_NAMES = ['Guard', 'Sentry', 'Ghost', 'Vanguard', 'Warden', 'Wisp', 'Echo', 'Raven', 'Slate', 'Cinder', 'Marlow', 'Vesper', 'Koda', 'Bishop', 'Reed', 'Tace', 'Lark', 'Nyx'];
 const HUE_POOL = [205, 155, 285, 35, 95, 330, 170, 250, 310, 55, 130];
-const rngPick = (a) => a[Math.floor(Math.random() * a.length)];
+// 單一 run 的「非戰鬥」隨機都吃一顆種子（招募/事件/搜刮/軍械庫＝可重現）；戰鬥(發散/裝甲/粒子)仍用 Math.random。
+// initRun 重新播種；sandbox 用預設種子。rngPick/weightedPick 的所有呼叫處皆為非戰鬥，故直接改吃 srand。
+let runRngState = (0x9E3779B9) >>> 0;
+function srandSeed(s) { runRngState = (s >>> 0) || 1; }
+function srand() {   // mulberry32
+  runRngState = (runRngState + 0x6D2B79F5) | 0;
+  let t = Math.imul(runRngState ^ (runRngState >>> 15), 1 | runRngState);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+const rngPick = (a) => a[Math.floor(srand() * a.length)];
 function makeRecruit(used) {
   let name = rngPick(UNIT_NAMES);
   if (used) { let g = 0; while (used.has(name) && g++ < 50) name = rngPick(UNIT_NAMES); used.add(name); }
@@ -1084,6 +1094,8 @@ function releasePointer() { if (document.exitPointerLock) document.exitPointerLo
 
 // 開新的一輪 run（從基礎陣容起，先進路線圖）
 function initRun() {
+  srandSeed(Math.floor(Math.random() * 0xFFFFFFFF));   // 本局非戰鬥 RNG 種子（之後全部可重現）
+  runFlags = {}; pendingEvents = []; eventSeen = [];    // 戰役旗標/事件佇列/已見事件重置
   roster = baseRoster(); missionIndex = 0;   // baseRoster 僅後備；序章會以三人陣容取代
   warehouse = []; backpack = []; drops = [];
   ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = WEAPONS[id].silent ? CONFIG.ammo.subsonicStart : CONFIG.ammo.stockStart;  // 共用彈藥儲備（消音武器＝稀少亞音速彈）
@@ -1180,6 +1192,9 @@ function settleAdvance() { advanceNode(); }   // → 路線圖 / RUNWIN
    ★combat hook：outcome {type:'combat',map} → forcedMap + startMission（接特製地圖；打完走一般結算→advanceNode）。
    ===================================================================== */
 let eventCur = null, eventPhase = 'CHOICE', eventPendingChoice = null, eventMsg = '', eventRects = [], eventSeen = [];
+let runFlags = {}, pendingEvents = [];   // 戰役旗標(儲存玩家選擇,跨節點)＋預定的後續事件佇列(被報位/伏擊…)；initRun 重置
+const setFlag = (k, v) => { runFlags[k] = (v === undefined ? true : v); };
+const flag = (k) => runFlags[k];
 const rmaxhp = (r) => CONFIG.unitHp + (r.bonusMaxHp || 0) + ((r.equipId && EQUIPMENT[r.equipId] && EQUIPMENT[r.equipId].fx.maxHpAdd) || 0);
 const hasGear = () => warehouse.some(it => it.kind === 'equip' || it.kind === 'item');
 function takeGear() { const i = warehouse.findIndex(it => it.kind === 'equip' || it.kind === 'item'); if (i >= 0) { const it = warehouse[i]; warehouse.splice(i, 1); return (it.kind === 'equip' ? EQUIPMENT : ITEMS)[it.id].name; } return null; }
@@ -1231,20 +1246,29 @@ function applyEventOutcome(o, mi) {
     case 'recruit': { if (typeof restDoAwaken === 'function') { /* 直接加一名 */ } const rec = makeRecruit(new Set(roster.map(r => r.name))); if (typeof autoEquipFromWarehouse === 'function') autoEquipFromWarehouse(rec); roster.push(rec); return `${rec.name} 加入隊伍`; }
     case 'relic': { let paid = ''; if (o.cost === 'gear') { const g = takeGear(); if (!g) return '沒有可付的拜師禮'; paid = `（付出 ${g}）`; } const nm = relicPassive(mi); return nm ? `${roster[mi].name} 習得「${nm}」${paid}` : `${roster[mi] ? roster[mi].name : '隊員'} 已無可學被動`; }
     case 'trade': { let paid = ''; if (o.cost === 'gear') { const g = takeGear(); if (!g) return '沒有可付的代價'; paid = `付出 ${g}，`; } return paid + applyEventOutcome(o.gain, mi); }
-    case 'gamble': { if (Math.random() < (o.p || 0.5)) return '成功！' + applyEventOutcome(o.win, mi); return '失手！' + applyEventOutcome(o.lose, mi); }
+    case 'gamble': { if (srand() < (o.p || 0.5)) return '成功！' + applyEventOutcome(o.win, mi); return '失手！' + applyEventOutcome(o.lose, mi); }
     case 'combat': { forcedMap = o.map || 'bravo'; eventCur = null; startMission(); return null; }   // ★hook：接特製地圖；打完走一般結算
+    case 'rest': { eventCur = null; enterRest(); return null; }   // 事件變成休息關（如：父親接待＋補給）→ 休整後 advanceNode
     default: return '無事發生';
   }
 }
 function enterEvent() {
-  let pool = EVENTS.filter(e => eventSeen.indexOf(e.id) < 0);
-  if (!pool.length) { eventSeen = []; pool = EVENTS.slice(); }
-  eventCur = rngPick(pool); eventSeen.push(eventCur.id);
+  let ev = null;
+  while (pendingEvents.length && !ev) { const id = pendingEvents.shift(); ev = EVENTS.find(e => e.id === id); }   // 被預定的後續(報位/伏擊…)優先；格子仍顯示 ?（shift 須先取出再 find，勿放進 predicate）
+  if (!ev) {   // 否則隨機抽：濾掉已見/不符 cond/scripted(只能被佇列觸發)
+    const avail = e => eventSeen.indexOf(e.id) < 0 && !e.scripted && (!e.cond || e.cond(runFlags));
+    let pool = EVENTS.filter(avail);
+    if (!pool.length) { eventSeen = []; pool = EVENTS.filter(e => !e.scripted && (!e.cond || e.cond(runFlags))); }
+    ev = pool.length ? rngPick(pool) : EVENTS[0];
+  }
+  eventCur = ev; if (ev) eventSeen.push(ev.id);
   eventPhase = 'CHOICE'; eventPendingChoice = null; eventMsg = ''; scene = 'EVENT'; releasePointer();
 }
 function eventPick(ci) {
   if (eventPhase !== 'CHOICE' || !eventCur) return;
   const c = eventCur.choices[ci]; if (!c || !eventChoosable(c)) return;
+  if (c.set) for (const k in c.set) setFlag(k, c.set[k]);            // 選擇寫旗標(記住玩家決定)
+  if (c.queue) for (const id of c.queue) pendingEvents.push(id);    // 預定後續事件(之後某 ? 觸發)
   if (c.need === 'target') { eventPendingChoice = c; eventPhase = 'TARGET'; eventMsg = ''; return; }
   const msg = applyEventOutcome(c.outcome, null);
   if (msg == null) return;   // combat：已離開 EVENT 場景
@@ -1421,7 +1445,7 @@ function skipIntro() {
    ===================================================================== */
 const RARITY_WEIGHT = { common: 60, uncommon: 25, rare: 12, epic: 4, legendary: 1 };
 const weaponValue = (W) => W.damage * W.fireRate * (W.range / 400);   // 粗略估值（自動配裝用）
-function weightedPick(ids, weightOf) { const w = ids.map(weightOf); const tot = w.reduce((a, b) => a + b, 0); let r = Math.random() * tot; for (let i = 0; i < ids.length; i++) { r -= w[i]; if (r <= 0) return ids[i]; } return ids[ids.length - 1]; }
+function weightedPick(ids, weightOf) { const w = ids.map(weightOf); const tot = w.reduce((a, b) => a + b, 0); let r = srand() * tot; for (let i = 0; i < ids.length; i++) { r -= w[i]; if (r <= 0) return ids[i]; } return ids[ids.length - 1]; }   // 非戰鬥(loot)＝吃種子
 const rollLootWeapon = () => weightedPick(LOOT_WEAPON_IDS, id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
 
 // --- 倉庫容量 ---
@@ -1465,14 +1489,14 @@ function enterRest(tutorial = false) {
 const RESUPPLY_CATS = ['ammo', 'ammo', 'ammo', 'weapon', 'weapon', 'equip', 'equip', 'item', 'item', 'ability'];   // 加權袋（彈藥較常見）
 function rollResupply() {
   const got = [], cats = [rngPick(RESUPPLY_CATS)];
-  if (Math.random() < 0.5) cats.push(rngPick(RESUPPLY_CATS));    // 機率追加第二類
-  if (Math.random() < 0.22) cats.push(rngPick(RESUPPLY_CATS));   // 小機率第三類
+  if (srand() < 0.5) cats.push(rngPick(RESUPPLY_CATS));    // 機率追加第二類
+  if (srand() < 0.22) cats.push(rngPick(RESUPPLY_CATS));   // 小機率第三類
   const seen = {};
   for (const c of cats) {
     if (c === 'ammo') {   // 彈藥：1~2 個武器類別各一份備彈（可複數）
       const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent);
-      const k = 1 + (Math.random() < 0.5 ? 1 : 0);
-      for (let j = 0; j < k; j++) { const id = rngPick(ids), amt = WEAPONS[id].magazine * (2 + Math.floor(Math.random() * 3)); ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }
+      const k = 1 + (srand() < 0.5 ? 1 : 0);
+      for (let j = 0; j < k; j++) { const id = rngPick(ids), amt = WEAPONS[id].magazine * (2 + Math.floor(srand() * 3)); ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }
     } else if (seen[c]) { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * 2; ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }   // 同類型重抽→改給彈藥(不重複物品)
     else if (c === 'weapon') { const id = rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); got.push(WEAPONS[id].name); }
     else if (c === 'equip') { const id = rngPick(LOOT_EQUIP_IDS); warehouse.push({ kind: 'equip', id }); got.push(EQUIPMENT[id].name); }
