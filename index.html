@@ -310,6 +310,85 @@ const PASSIVE_TREES = {
   ranger: [['scout', 'lightstep'], ['awareness', 'ambush'], ['fielddress', 'slipaway']],
 };
 const hasPassive = (u, id) => !!(u && u.passives && u.passives.indexOf(id) >= 0);
+// 被動數值（佔位、面板可調）。多數效果在戰鬥 hook 依條件套用（passive* 函式）。
+CONFIG.passive = {
+  duginResist: 0.25, duginSpread: 0.7,                 // 据守：貼掩體 −25%受傷、發散×0.7
+  steadyMinStill: 0.25, steadySpread: 0.6,             // 沉著：靜止≥0.25s 或望遠 → 發散×0.6
+  overwatchReact: 0.6, overwatchSpread: 0.75,          // 警戒待命：待機反應×0.6、idle 發散×0.75
+  suppressDur: 1.2, suppressSpread: 2.0,               // 壓制：被射的敵 1.2s 內發散×2
+  bulwarkMinStill: 0.4, bulwarkResist: 0.3,            // 不動如山：靜止≥0.4s −30%受傷 + 免暴擊
+  laststandHp: 0.35, laststandResist: 0.3, laststandSpread: 0.8,   // 死守：HP≤35% −30%受傷、發散×0.8
+  breacherNear: 200, breacherClose: 1.4, breacherFar: 0.8, breacherTurn: 1.3,   // 破門手：≤200px ×1.4、遠 ×0.8、轉向×1.3
+  quickReload: 0.7,                                    // 快手：換彈時間×0.7
+  momentumDur: 1.5, momentumDmg: 1.25,                 // 衝鋒：奔跑後 1.5s 內傷害×1.25
+  sprayMaxMul: 0.7,                                    // 掃射：連射 bloom 上限×0.7
+  executeDur: 2.0, executeMove: 1.25, executeFire: 1.3,   // 斬首：擊殺後 2s +移動+射速
+  adrenalineHp: 0.35, adrenalineMove: 1.2, adrenalineFire: 1.2,   // 背水：HP≤35% +移動+射速
+  scoutCone: 1.4, scoutRange: 1.3,                     // 斥候：視錐×1.4、近身感知×1.3
+  lightstepHear: 0.5,                                  // 輕步：開火警覺半徑×0.5
+  ambushDmg: 1.5,                                       // 伏擊：未被偵測開火 ×1.5
+  fielddressKillHeal: 12, fielddressRegen: 3, fielddressRegenDelay: 4,   // 戰場急救：擊殺回12、脫戰4s後 3/s 緩回
+  slipawayHp: 0.35, slipawayMove: 1.3,                 // 金蟬脫殼：HP≤35% +移動
+};
+const pLowHp = (u, frac) => u.hp <= u.maxHp * frac;
+const onCover = (u) => onLowWall(u.pos, u.radius + CONFIG.lowWall.touchR);   // 貼掩體（低矮牆/矮掩體/可破壞矮形態）
+const pStill = (u, t) => (u.stillT || 0) >= t;
+// 本發發散倍率（越小越準）：据守/沉著/死守
+function passiveSpreadMul(u) {
+  const P = CONFIG.passive; let m = 1;
+  if (hasPassive(u, 'dugin') && onCover(u)) m *= P.duginSpread;
+  if (hasPassive(u, 'steady') && (pStill(u, P.steadyMinStill) || (u.id === controlledId && isScoping()))) m *= P.steadySpread;
+  if (hasPassive(u, 'laststand') && pLowHp(u, P.laststandHp)) m *= P.laststandSpread;
+  return m;
+}
+// 射速倍率（>1 更快）：斬首(passBuff)/背水(低血)
+function passiveFireMul(u) {
+  const P = CONFIG.passive; let m = (u.passBuffT > 0 ? (u.passBuffFire || 1) : 1);
+  if (hasPassive(u, 'adrenaline') && pLowHp(u, P.adrenalineHp)) m *= P.adrenalineFire;
+  return m;
+}
+// 移動倍率：斬首(passBuff)/背水/金蟬脫殼（皆低血）
+function passiveMoveMul(u) {
+  const P = CONFIG.passive; let m = (u.passBuffT > 0 ? (u.passBuffMove || 1) : 1);
+  if (hasPassive(u, 'adrenaline') && pLowHp(u, P.adrenalineHp)) m *= P.adrenalineMove;
+  if (hasPassive(u, 'slipaway') && pLowHp(u, P.slipawayHp)) m *= P.slipawayMove;
+  return m;
+}
+// 受傷倍率（<1 減傷）：据守(掩體)/不動如山(靜止)/死守(低血)
+function passiveDmgTakenMul(u) {
+  const P = CONFIG.passive; let m = 1;
+  if (hasPassive(u, 'dugin') && onCover(u)) m *= (1 - P.duginResist);
+  if (hasPassive(u, 'bulwark') && pStill(u, P.bulwarkMinStill)) m *= (1 - P.bulwarkResist);
+  if (hasPassive(u, 'laststand') && pLowHp(u, P.laststandHp)) m *= (1 - P.laststandResist);
+  return m;
+}
+// 開火當下決定的傷害倍率：衝鋒(奔跑窗)/伏擊(未被偵測)
+function passiveFireDmgMul(u) {
+  const P = CONFIG.passive; let m = 1;
+  if (hasPassive(u, 'momentum') && (u.momentumT || 0) > 0) m *= P.momentumDmg;
+  if (hasPassive(u, 'ambush') && u.faction === 'player' && !u._seenNow) m *= P.ambushDmg;
+  return m;
+}
+const breacherMul = (d) => (d <= CONFIG.passive.breacherNear ? CONFIG.passive.breacherClose : CONFIG.passive.breacherFar);
+// 玩家免暴擊加成（眼觀四面 或 不動如山+靜止）
+const passiveNegateCrit = (u) => u.faction === 'player' && (hasPassive(u, 'awareness') || (hasPassive(u, 'bulwark') && pStill(u, CONFIG.passive.bulwarkMinStill)));
+// 擊殺者 on-kill：斬首(buff)/戰場急救(回血)
+function onKillPassive(killer) {
+  if (!killer || killer.faction !== 'player') return; const P = CONFIG.passive;
+  if (hasPassive(killer, 'execute')) { killer.passBuffT = P.executeDur; killer.passBuffMove = P.executeMove; killer.passBuffFire = P.executeFire; }
+  if (hasPassive(killer, 'fielddress')) { killer.hp = Math.min(killer.maxHp, killer.hp + P.fielddressKillHeal); spawnHeal(killer.pos); }
+}
+// 每幀更新被動時間態（靜止計時/衝鋒窗/斬首buff/戰場急救脫戰回血）
+function tickPassives(u, dt) {
+  if (u.faction !== 'player' || u.state === 'DEAD' || u.state === 'EXTRACTED') return;
+  const moved = u._lastPos ? dist(u.pos, u._lastPos) > 0.6 : false;
+  u.stillT = moved ? 0 : (u.stillT || 0) + dt;
+  u._lastPos = { x: u.pos.x, y: u.pos.y };
+  if (u.sprinting) u.momentumT = CONFIG.passive.momentumDur; else if (u.momentumT > 0) u.momentumT -= dt;
+  if (u.passBuffT > 0) { u.passBuffT -= dt; if (u.passBuffT <= 0) { u.passBuffMove = 1; u.passBuffFire = 1; } }
+  u.regenT = (u.regenT || 0) + dt;   // 脫戰計時（開火/受傷會清零）
+  if (hasPassive(u, 'fielddress') && u.regenT > CONFIG.passive.fielddressRegenDelay && u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + CONFIG.passive.fielddressRegen * dt);
+}
 
 /* =====================================================================
    ENEMY_TYPES — 敵人類型目錄（資料驅動；enemySpawns 以 type 指定，預設 grunt）。
@@ -901,6 +980,12 @@ function makePlayer(i, cfg, pos) {
   // 彈藥備量＝休息關分配的量（底線武器無限）
   const reserve = isInfiniteAmmo(cfg.weaponId) ? 9999 : (cfg.allocatedAmmo != null ? cfg.allocatedAmmo : CONFIG.ammo.defaultAlloc);
   const magazine = Math.round(W.magazine * (fx.magMul || 1));   // 裝備可改彈夾容量
+  // 被動：靜態屬性類（其餘條件式在戰鬥 hook 動態套）。破門手＝轉向更快;快手＝換彈更快;斥候＝視錐寬+近身感知遠
+  const pv = cfg.passives || [], Pp = CONFIG.passive;
+  const pTurn = pv.includes('breacher') ? Pp.breacherTurn : 1;
+  const pReload = pv.includes('quickhands') ? Pp.quickReload : 1;
+  const pSense = pv.includes('scout') ? Pp.scoutRange : 1;
+  const pCone = pv.includes('scout') ? CONFIG.vision.coneHalfDeg * Pp.scoutCone : null;
   return {
     id: i, name: cfg.name, faction: 'player', hue: cfg.hue, strength: cfg.strength || 1,
     pos: { x: pos.x, y: pos.y }, facing: 0, radius: CONFIG.unitRadius,
@@ -912,11 +997,13 @@ function makePlayer(i, cfg, pos) {
     weaponId: cfg.weaponId, weapon: W, magazine, ammoInMag: magazine, ammoReserve: reserve, reloadT: 0, reloadDur: 0, bloom: 0,
     abilityId: cfg.abilityId, ability: ab, abilityCd: 0,
     equipId: cfg.equipId || null, itemId: cfg.itemId || null, itemUsed: false,   // 裝備槽 / 道具槽
-    dmgResist: fx.dmgResist || 0, reloadMul: fx.reloadMul || 1, spreadMul: fx.spreadMul || 1,
-    turnSpeed: W.turnSpeed * (fx.turnMul || 1), moveMul: fx.moveMul || 1,
+    dmgResist: fx.dmgResist || 0, reloadMul: (fx.reloadMul || 1) * pReload, spreadMul: fx.spreadMul || 1,
+    turnSpeed: W.turnSpeed * (fx.turnMul || 1) * pTurn, moveMul: fx.moveMul || 1,
+    coneHalfDeg: pCone,                    // 斥候＝視錐更寬（null＝用全域）
     buffT: 0, buffMove: 1, buffFire: 1,    // 道具（腎上腺素）短時 buff
+    passBuffT: 0, passBuffMove: 1, passBuffFire: 1, stillT: 0, momentumT: 0, regenT: 0, suppressedT: 0,   // 被動時間態
     hasFile: !!cfg.carriesFile,            // 是否身上帶著機密檔案（獨立攜帶格，跨關隨撤出者）
-    senseRadius: CONFIG.vision.senseRadius * (cfg.strength || 1) * (fx.senseMul || 1),
+    senseRadius: CONFIG.vision.senseRadius * (cfg.strength || 1) * (fx.senseMul || 1) * pSense,
     fireCooldown: 0, engageTimer: 0, alertTimer: 0, muzzle: 0, sprinting: false,
     idleAnchor: 0, sweepPhase: 0, sweepDir: 1, extractNode: null,   // idleAnchor＝進入閒置時的正前方
     burstLeft: CONFIG.idleTap.size, burstCd: 0, wanderTarget: 0, wanderTimer: 0,
@@ -1417,31 +1504,37 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
   if (u.reloadT > 0 || u.fireCooldown > 0) return false;
   if (u.ammoInMag <= 0) { startReload(u); return false; }
   const pellets = W.pellets || 1;   // 霰彈：單次擊發多顆彈丸，各自抽散布
+  const spreadF = (u.spreadMul || 1) * passiveSpreadMul(u);   // 裝備(穩定器) + 被動(据守/沉著/死守)
+  const dmgF = passiveFireDmgMul(u);                          // 被動(衝鋒/伏擊)：開火當下決定
+  const isPlayer = u.faction === 'player';
+  if (isPlayer) u.regenT = 0;                                 // 開火＝在戰鬥（清戰場急救脫戰計時）
   for (let p = 0; p < pellets; p++) {
-    const a = angle + (Math.random() * 2 - 1) * spreadDeg * (u.spreadMul || 1) * Math.PI / 180;   // 裝備(穩定器)可降發散
+    const a = angle + (Math.random() * 2 - 1) * spreadDeg * spreadF * Math.PI / 180;
     bullets.push({
       x: u.pos.x + Math.cos(angle) * (u.radius + 2), y: u.pos.y + Math.sin(angle) * (u.radius + 2),
       vx: Math.cos(a) * W.projSpeed * CONFIG.juice.bulletSpeedMul, vy: Math.sin(a) * W.projSpeed * CONFIG.juice.bulletSpeedMul,   // 近 hitscan（碰撞已是掃描式、不穿透）
-      dmg: W.damage, faction: u.faction, range: W.range, traveled: 0,
+      dmg: W.damage * dmgF, faction: u.faction, range: W.range, traveled: 0,
       ox: u.pos.x, oy: u.pos.y,   // 發射原點（低矮牆「貼牆可越射」判定用）
       pierce: W.pierce || 0,      // 穿甲：對裝甲敵人的擋格率衰減
+      breacher: hasPassive(u, 'breacher'), suppress: hasPassive(u, 'suppress'), shooterId: isPlayer ? u.id : -1,   // 被動：命中時依距離/壓制套用、擊殺歸屬
     });
   }
   u.ammoInMag--;
-  u.fireCooldown = (1 / W.fireRate) / (fireRateMult * (u.buffFire || 1));   // 道具(腎上腺素)可加射速
-  if (bloomAdd) u.bloom = Math.min(W.spreadMax, u.bloom + bloomAdd);
+  u.fireCooldown = (1 / W.fireRate) / (fireRateMult * (u.buffFire || 1) * passiveFireMul(u));   // 道具(腎上腺素) + 被動(斬首/背水)可加射速
+  if (bloomAdd) u.bloom = Math.min(W.spreadMax * (hasPassive(u, 'spray') ? CONFIG.passive.sprayMaxMul : 1), u.bloom + bloomAdd);   // 掃射：連射 bloom 上限更低
   u.muzzle = W.silent ? 0.02 : 0.05;
   if (u.faction === 'enemy' && !W.silent) u.revealT = CONFIG.stealth.fireReveal;   // 敵人開火＝槍口火光暴露位置（對玩家現形，含草叢/霧中）
   u.recoil = CONFIG.juice.recoil;   // 開火後座（繪製時往後彈、快速回正）
   if (u.faction === 'player' && u.id === controlledId) { kickY += CONFIG.juice.camKick; addShakeAt(u.pos, CONFIG.juice.shakeFire); }   // 你的槍＝相機踢+微震
   Sfx.play(W.silent ? 'silshot' : (W.pellets ? 'shotgun' : 'shot'), u.pos);   // 開火音效接縫（pos→邊框聲音提示）
   if (u.ammoInMag <= 0) startReload(u);
-  if (u.faction === 'player' && !W.silent) alertEnemiesNear(u.pos);   // 槍聲：驚動聽覺半徑內的閒置敵人；消音武器＝不發槍聲
+  if (u.faction === 'player' && !W.silent) alertEnemiesNear(u.pos, hasPassive(u, 'lightstep') ? CONFIG.enemyHearRadius * CONFIG.passive.lightstepHear : CONFIG.enemyHearRadius);   // 槍聲驚動半徑；輕步＝半徑更小
   return true;
 }
 // 玩家開火的「槍聲」：半徑內 IDLE 敵人轉入 ENGAGED（latch）
-function alertEnemiesNear(pos) {
-  for (const e of enemies) if (!e.dead && e.state === 'IDLE' && dist(e.pos, pos) <= CONFIG.enemyHearRadius) e.state = 'ENGAGED';
+function alertEnemiesNear(pos, radius) {
+  const r = radius || CONFIG.enemyHearRadius;
+  for (const e of enemies) if (!e.dead && e.state === 'IDLE' && dist(e.pos, pos) <= r) e.state = 'ENGAGED';
 }
 const unitMag = (u) => u.magazine || u.weapon.magazine;   // 有效彈夾（裝備可改）
 function startReload(u) {
@@ -1522,7 +1615,7 @@ function setStance(u, s) { if (u && (s === 'engage' || s === 'defend')) { u.stan
 
 // 手動：基礎+連射 bloom（玩家扳機紀律＝技巧）。敵人：同手動會 bloom。
 const manualFire = (u, ang) => fireUnit(u, ang, (u.weapon.spreadBase + u.bloom) * (isScoping() ? CONFIG.scope.spreadMul : 1), 1, u.weapon.spreadPerShot);   // 望遠＝降發散穩定
-const enemyFire  = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase + u.bloom, 1, u.weapon.spreadPerShot);
+const enemyFire  = (u, ang) => fireUnit(u, ang, (u.weapon.spreadBase + u.bloom) * (u.suppressedT > 0 ? CONFIG.passive.suppressSpread : 1), 1, u.weapon.spreadPerShot);   // 被壓制＝發散變大
 // 敵人攻擊分派：ranged＝持續射擊（霰彈靠武器 pellets 自動多發）；burst＝點放掃射（打 size 發→停 gap 秒）
 function enemyAttack(e, ang, dt) {
   if (e.attack !== 'burst') { enemyFire(e, ang); return; }
@@ -1530,12 +1623,13 @@ function enemyAttack(e, ang, dt) {
   if (enemyFire(e, ang)) { e.burstLeft--; if (e.burstLeft <= 0) { e.burstLeft = e.weapon.burst.size; e.burstCd = e.weapon.burst.gap; } }
 }
 // 待機開火：基礎較差(spreadBase/精度倍率)＋連射 bloom；射速 ×idleFireRateMult。TAP 靠停頓讓 bloom 回復、AUTO 把 bloom 拉滿。
-const idleEngageFire = (u, ang) => fireUnit(u, ang, u.weapon.spreadBase / CONFIG.idleAccuracyMult + u.bloom, CONFIG.idleFireRateMult, u.weapon.spreadPerShot);
+const idleEngageFire = (u, ang) => fireUnit(u, ang, (u.weapon.spreadBase / CONFIG.idleAccuracyMult) * (hasPassive(u, 'overwatch') ? CONFIG.passive.overwatchSpread : 1) + u.bloom, CONFIG.idleFireRateMult, u.weapon.spreadPerShot);   // 警戒待命：待機 overwatch 更準
 
 // fromAng＝攻擊來向（目標→發射原點的角度）。落在目標視野錐外＝flank（側後）。
 function damageUnit(u, dmg, pierce = 0, fromAng = null) {
   const coneHalf = (u.coneHalfDeg || CONFIG.vision.coneHalfDeg) * Math.PI / 180;
-  const flanked = (fromAng != null) && Math.abs(angDiff(fromAng, u.facing)) > coneHalf;   // 錐外＝繞背
+  let flanked = (fromAng != null) && Math.abs(angDiff(fromAng, u.facing)) > coneHalf;   // 錐外＝繞背
+  if (flanked && passiveNegateCrit(u)) flanked = false;                                    // 眼觀四面/不動如山(靜止)：玩家不吃暴擊加成（仍有正面減傷）
   const surprise = (u.faction === 'enemy' && u.state === 'IDLE');                          // 閒置敵人被突襲（僅對敵）
   const mult = flanked ? CONFIG.flank.flankMult : (surprise ? CONFIG.flank.surpriseMult : 1);  // 取較高、不相乘
   if (u.faction === 'enemy') {
@@ -1544,8 +1638,8 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
     if (!flanked && u.armor > 0 && Math.random() < u.armor * (1 - pierce)) { spawnBlock(u.pos); return; }   // 裝甲：整發擋下非穿甲（繞背無視）
   }
   const resist = flanked ? 0 : (u.dmgResist || 0);   // 繞背無視所有裝甲（含玩家固定減傷＝甲只罩正面）
-  u.hp -= dmg * mult * (1 - resist);
-  if (u.faction === 'player') u.alertTimer = CONFIG.ghostAlertTime;
+  u.hp -= dmg * mult * (1 - resist) * (u.faction === 'player' ? passiveDmgTakenMul(u) : 1);   // 被動減傷：据守/不動如山/死守
+  if (u.faction === 'player') { u.alertTimer = CONFIG.ghostAlertTime; u.regenT = 0; }   // 受傷＝在戰鬥（清戰場急救脫戰計時）
   if (flanked || surprise) spawnCrit(u.pos); else spawnHit(u.pos);   // 繞背/突襲命中＝不同火花
   addShakeAt(u.pos, (flanked || surprise) ? CONFIG.juice.shakeHit * 1.6 : CONFIG.juice.shakeHit);   // 命中震動（依離相機衰減）
   u.hitFlash = CONFIG.juice.hitFlash;                                 // 受擊閃白
@@ -1672,7 +1766,15 @@ function updateBullets(dt) {
     }
     if (!gone) {
       const targets = b.faction === 'player' ? enemies.filter(e => !e.dead) : activePlayers();
-      for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) { damageUnit(t, b.dmg, b.pierce || 0, angTo(t.pos, { x: b.ox, y: b.oy })); gone = true; break; }
+      for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) {
+        let dmg = b.dmg;
+        if (b.breacher) dmg *= breacherMul(b.traveled);                                  // 破門手：命中時依距離
+        const wasAlive = !t.dead && t.hp > 0;
+        damageUnit(t, dmg, b.pierce || 0, angTo(t.pos, { x: b.ox, y: b.oy }));
+        if (b.suppress && t.faction === 'enemy' && !t.dead) t.suppressedT = CONFIG.passive.suppressDur;   // 壓制：被射的敵發散變大
+        if (wasAlive && (t.dead || t.hp <= 0) && b.faction === 'player' && b.shooterId >= 0) onKillPassive(players[b.shooterId]);   // 斬首/戰場急救
+        gone = true; break;
+      }
     }
     if (gone) bullets.splice(i, 1);
   }
@@ -1722,7 +1824,8 @@ function idleTick(u, dt, lockFacing) {
   else if (st.fireMode === 'DEFENSIVE') mayFire = !!target && (u.alertTimer > 0 || (nearest && nd < CONFIG.ghostCloseRange));
 
   u.engageTimer = mayFire ? u.engageTimer + dt : 0;
-  if (mayFire && u.engageTimer >= CONFIG.idleReactionDelay) {
+  const reactDelay = CONFIG.idleReactionDelay * (hasPassive(u, 'overwatch') ? CONFIG.passive.overwatchReact : 1);   // 警戒待命：待機反應更快
+  if (mayFire && u.engageTimer >= reactDelay) {
     const ang = angTo(u.pos, target.pos);
     if (st.discipline === 'AUTO') {
       idleEngageFire(u, ang);                              // 扣到底：持續噴、bloom 拉滿、耗彈快
@@ -2247,8 +2350,8 @@ function update(dt) {
   if (cutscene && cutscene.lock) return;   // 演出鎖控制：只跑鏡頭/演出，不跑常規 sim
 
   const juiceDecay = (u) => { if (u.recoil > 0) u.recoil = Math.max(0, u.recoil - CONFIG.juice.recoilDecay * dt); if (u.hitFlash > 0) u.hitFlash -= dt; if (u.flinchX) { u.flinchX *= Math.exp(-22 * dt); u.flinchY *= Math.exp(-22 * dt); } };
-  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; juiceDecay(p); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); }
-  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; if (e.revealT > 0) e.revealT -= dt; juiceDecay(e); tickAmmo(e, dt); }
+  for (const p of players) { if (p.fireCooldown > 0) p.fireCooldown -= dt; if (p.muzzle > 0) p.muzzle -= dt; juiceDecay(p); if (p.abilityCd > 0) p.abilityCd -= dt; tickAmmo(p, dt); tickPassives(p, dt); }
+  for (const e of enemies) { if (e.dead) continue; if (e.fireCooldown > 0) e.fireCooldown -= dt; if (e.muzzle > 0) e.muzzle -= dt; if (e.revealT > 0) e.revealT -= dt; if (e.suppressedT > 0) e.suppressedT -= dt; juiceDecay(e); tickAmmo(e, dt); }
 
   // 0) 護送 seize：護送(controlledId 指向 EXTRACTING)時，移動或開火 → 奪回手動、撤離中斷（滑鼠轉視野不算）
   if (controlledId != null && players[controlledId].state === 'EXTRACTING') {
@@ -2272,7 +2375,7 @@ function update(dt) {
         const rx = Math.cos(u.facing + Math.PI / 2), ry = Math.sin(u.facing + Math.PI / 2);
         let mx = fx * fwd + rx * strafe, my = fy * fwd + ry * strafe;
         const l = Math.hypot(mx, my) || 1;
-        const spd = CONFIG.moveSpeed * (u.sprinting ? sprintMult(u) : 1) * lowWallSpeedMult(u.pos) * (u.moveMul || 1) * (u.buffMove || 1);  // 低矮牆減速 + 裝備/道具
+        const spd = CONFIG.moveSpeed * (u.sprinting ? sprintMult(u) : 1) * lowWallSpeedMult(u.pos) * (u.moveMul || 1) * (u.buffMove || 1) * passiveMoveMul(u);  // 低矮牆減速 + 裝備/道具 + 被動(斬首/背水/金蟬)
         u.pos.x += mx / l * spd * dt; u.pos.y += my / l * spd * dt;
       }
       if (Input.fire) manualFire(u, u.facing);
