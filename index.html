@@ -264,23 +264,52 @@ const ITEM_IDS = Object.keys(ITEMS);
 const LOOT_ITEM_IDS = ITEM_IDS.slice();
 
 /* =====================================================================
-   ARCHETYPES — 待機個性矩陣（策展組合）。每名單位招募時隨機抽一種。
-   facing: HOLD(固定) | SWEEP(掃視) | WANDER(亂飄) | TRACK(轉向看得到的威脅)
-   discipline: TAP(點放：短 burst + 停頓讓 bloom 回復，準/省彈/斷續) | AUTO(扣到底：持續噴，bloom 拉滿，散/耗彈/壓制)
-   tier 為盯哨可靠度(0=☆ 最飄忽 → 3=★★★ 最可靠)，僅用於 UI 名稱顏色提示。
+   ARCHETYPES — 我方待機個性（只看「看哪」一軸，by-the-book→chill 三型）。招募隨機抽一種。
+   facing: HOLD(完全不轉頭·固守) | SWEEP(左右掃視·推進) | TRACK(東張西望/追威脅·戰場生存)
+   discipline/fireMode 為每型固定預設（不再是玩家變數；AUTO/TAP 的味道收進被動樹）。
+   tree = 對應的被動技能樹（PASSIVE_TREES）。每單位另有 tier(升階等級0~3)＝戰果結算累積。
    ===================================================================== */
 const ARCHETYPES = {
-  rock:       { name: 'Rock',       facing: 'HOLD',   discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 3 },
-  sentinel:   { name: 'Sentinel',   facing: 'SWEEP',  discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 2 },
-  suppressor: { name: 'Suppressor', facing: 'HOLD',   discipline: 'AUTO', fireMode: 'SUPPRESSIVE', tier: 2 },
-  hunter:     { name: 'Hunter',     facing: 'TRACK',  discipline: 'TAP',  fireMode: 'AGGRESSIVE',  tier: 2 },
-  sprayer:    { name: 'Sprayer',    facing: 'SWEEP',  discipline: 'AUTO', fireMode: 'AGGRESSIVE',  tier: 1 },
-  watchdog:   { name: 'Watchdog',   facing: 'TRACK',  discipline: 'AUTO', fireMode: 'DEFENSIVE',   tier: 1 },
-  drifter:    { name: 'Drifter',    facing: 'WANDER', discipline: 'TAP',  fireMode: 'DEFENSIVE',   tier: 0 },
-  twitch:     { name: 'Twitch',     facing: 'WANDER', discipline: 'AUTO', fireMode: 'AGGRESSIVE',  tier: 0 },
+  anchor:    { name: '磐石', facing: 'HOLD',  discipline: 'TAP',  fireMode: 'AGGRESSIVE', tree: 'anchor', desc: '完全不轉頭 · 固守' },
+  spearhead: { name: '先鋒', facing: 'SWEEP', discipline: 'AUTO', fireMode: 'AGGRESSIVE', tree: 'spear',  desc: '左右掃視 · 推進' },
+  ranger:    { name: '遊獵', facing: 'TRACK', discipline: 'TAP',  fireMode: 'DEFENSIVE',  tree: 'ranger', desc: '東張西望 · 戰場生存' },
 };
 const ARCHETYPE_IDS = Object.keys(ARCHETYPES);
-const TIER_COLOR = ['#ff7d7d', '#e0b050', '#9fd0e0', '#7fffa8']; // 0(☆)→3(★★★)
+const TIER_COLOR = ['#9fb3c8', '#e0b050', '#9fd0e0', '#7fffa8']; // 升階等級 0(白板)→3(★★★) 名稱色
+
+/* =====================================================================
+   PASSIVES — 被動技能（戰技/訓練取向、條件式、非超能）。每單位最多累積 3 條(戰果結算升一階、二選一)。
+   三樹各 3 階×二選一；各階節點獨立(無同樹前置)。效果在戰鬥 hook 套用(passive* 函式)；數值佔位、面板可調(CONFIG.passive)。
+   ===================================================================== */
+const PASSIVES = {
+  // 磐石 anchor — 固守
+  dugin:     { name: '据守',     tree: 'anchor', tier: 1, desc: '貼掩體時 −受傷、+命中' },
+  steady:    { name: '沉著',     tree: 'anchor', tier: 1, desc: '靜止/望遠時散布更小、bloom 回更快' },
+  overwatch: { name: '警戒待命', tree: 'anchor', tier: 2, desc: '待機(未附身)時對進視錐的敵 +命中、反應更快' },
+  suppress:  { name: '壓制',     tree: 'anchor', tier: 2, desc: '持續射同一敵→其命中下降、更想找掩體' },
+  bulwark:   { name: '不動如山', tree: 'anchor', tier: 3, desc: '本段未移動→再 −受傷、免一次暴擊' },
+  laststand: { name: '死守',     tree: 'anchor', tier: 3, desc: '低血不退：+命中、−受傷' },
+  // 先鋒 spear — 推進
+  breacher:  { name: '破門手',   tree: 'spear',  tier: 1, desc: '近距 +傷/+操控、遠距略減' },
+  quickhands:{ name: '快手',     tree: 'spear',  tier: 1, desc: '移動中換彈不減速、換槍更快' },
+  momentum:  { name: '衝鋒',     tree: 'spear',  tier: 2, desc: '奔跑後首次開火 +傷/+命中' },
+  spray:     { name: '掃射',     tree: 'spear',  tier: 2, desc: 'AUTO 連射 bloom 上限略低、近距更密' },
+  execute:   { name: '斬首',     tree: 'spear',  tier: 3, desc: '擊殺後短時間 +移動+射速' },
+  adrenaline:{ name: '背水',     tree: 'spear',  tier: 3, desc: '低血時 +移動+射速' },
+  // 遊獵 ranger — 戰場生存
+  scout:     { name: '斥候',     tree: 'ranger', tier: 1, desc: '視錐略寬、偵測略遠、目標較久不丟失' },
+  lightstep: { name: '輕步',     tree: 'ranger', tier: 1, desc: '開火警覺半徑略小、移動更安靜' },
+  awareness: { name: '眼觀四面', tree: 'ranger', tier: 2, desc: '被繞背/側翼攻擊不吃暴擊加成' },
+  ambush:    { name: '伏擊',     tree: 'ranger', tier: 2, desc: '未被發現的第一槍 +傷' },
+  fielddress:{ name: '戰場急救', tree: 'ranger', tier: 3, desc: '擊殺後小幅自療 / 脫戰數秒緩回' },
+  slipaway:  { name: '金蟬脫殼', tree: 'ranger', tier: 3, desc: '低血時短暫 +移動 + 降被偵測' },
+};
+const PASSIVE_TREES = {
+  anchor: [['dugin', 'steady'], ['overwatch', 'suppress'], ['bulwark', 'laststand']],
+  spear:  [['breacher', 'quickhands'], ['momentum', 'spray'], ['execute', 'adrenaline']],
+  ranger: [['scout', 'lightstep'], ['awareness', 'ambush'], ['fielddress', 'slipaway']],
+};
+const hasPassive = (u, id) => !!(u && u.passives && u.passives.indexOf(id) >= 0);
 
 /* =====================================================================
    ENEMY_TYPES — 敵人類型目錄（資料驅動；enemySpawns 以 type 指定，預設 grunt）。
@@ -307,6 +336,7 @@ function makeRecruit(used) {
   return { name, hue: rngPick(HUE_POOL), strength: rngPick([0.8, 1.0, 1.2]),
     weaponId: rngPick(RECRUIT_WEAPON_IDS), abilityId: 'heal', archetypeId: rngPick(ARCHETYPE_IDS),
     bonusMaxHp: 0, hp: CONFIG.unitHp, allocatedAmmo: CONFIG.ammo.defaultAlloc, disciplineOverride: null,
+    tier: 0, passives: [],            // 升階等級(0~3)＋已學被動id；戰果結算二選一累積
     equipId: null, itemId: null };   // 裝備（持續被動）/ 道具（一次性）各 1 槽，預設空
 }
 
@@ -877,6 +907,7 @@ function makePlayer(i, cfg, pos) {
     hp: startHp, maxHp,
     state: i === 0 ? 'CONTROLLED' : 'IDLE',
     archetypeId: cfg.archetypeId, archetype: arch, disciplineOverride: cfg.disciplineOverride || null,
+    tier: cfg.tier || 0, passives: (cfg.passives || []).slice(),   // 升階等級 + 已學被動（戰鬥中讀 hasPassive）
     idleStrategy: { fireMode: arch.fireMode, targeting: 'NEAREST_IN_LOS', facing: arch.facing, discipline: disc, moveOnIdle: false },
     weaponId: cfg.weaponId, weapon: W, magazine, ammoInMag: magazine, ammoReserve: reserve, reloadT: 0, reloadDur: 0, bloom: 0,
     abilityId: cfg.abilityId, ability: ab, abilityCd: 0,
@@ -924,7 +955,7 @@ function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.P
 const baseRoster = () => { const used = new Set(); return Array.from({ length: CONFIG.squadSize }, () => makeRecruit(used)); };
 const rosterFromPlayer = (p) => {
   const eqAdd = (p.equipId && EQUIPMENT[p.equipId] && EQUIPMENT[p.equipId].fx.maxHpAdd) || 0;  // 裝備加的 maxHp 不算進 bonusMaxHp
-  return { name: p.name, hue: p.hue, strength: p.strength, weaponId: p.weaponId, abilityId: p.abilityId, archetypeId: p.archetypeId, bonusMaxHp: p.maxHp - CONFIG.unitHp - eqAdd, hp: p.hp, allocatedAmmo: isInfiniteAmmo(p.weaponId) ? CONFIG.ammo.defaultAlloc : p.ammoReserve, disciplineOverride: p.disciplineOverride || null, equipId: p.equipId || null, itemId: p.itemUsed ? null : (p.itemId || null), carriesFile: !!p.hasFile };
+  return { name: p.name, hue: p.hue, strength: p.strength, weaponId: p.weaponId, abilityId: p.abilityId, archetypeId: p.archetypeId, tier: p.tier || 0, passives: (p.passives || []).slice(), bonusMaxHp: p.maxHp - CONFIG.unitHp - eqAdd, hp: p.hp, allocatedAmmo: isInfiniteAmmo(p.weaponId) ? CONFIG.ammo.defaultAlloc : p.ammoReserve, disciplineOverride: p.disciplineOverride || null, equipId: p.equipId || null, itemId: p.itemUsed ? null : (p.itemId || null), carriesFile: !!p.hasFile };
 };
 // 機密檔案恆有且只有一名攜帶者：跨關由撤出者保留旗標；若無（序章後首次/異常）給第一人，多於一名只留第一名
 function ensureFileCarrier() {
@@ -1232,9 +1263,7 @@ function rollScavenge(n) {
   const ability = () => { const id = rngPick(LOOT_ABILITY_IDS), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}（+${A.heal}/CD${A.cooldown}s）→ 倉庫`, color: '#c0a0ff' }; };
   const equipO = () => { const id = rngPick(LOOT_EQUIP_IDS), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}，持續被動）→ 倉庫`, color: '#9fd0e0' }; };
   const itemO = () => { const id = rngPick(LOOT_ITEM_IDS), I = ITEMS[id]; return { type: 'item', id, label: `道具 · ${I.name}（一次性）→ 倉庫`, color: '#ffd27d' }; };
-  const persona = () => ({ type: 'personality', label: '訓練 · 提升某員待機個性一級（指定成員）', color: '#ffd27d', needTarget: true });
-  const discip = () => ({ type: 'discipline', label: '紀律 · 某員待機改點放 TAP（指定成員）', color: '#ffd27d', needTarget: true });
-  const gens = [supply, maxhp, weapon, weapon, ability, equipO, itemO, persona, discip];
+  const gens = [supply, maxhp, weapon, weapon, ability, equipO, itemO];   // 升階/轉職已移到「戰果結算」，休息不再發個性升級
   const offers = [supply()];                       // 地板保證：基本補給
   while (offers.length < n) offers.push(rngPick(gens)());
   return offers;
@@ -1257,8 +1286,6 @@ function applyOffer(o, mi) {
   else if (o.type === 'ability') { warehouse.push({ kind: 'ability', id: o.id }); restMsg = `搜刮：${ABILITIES[o.id].name} 入倉庫`; }
   else if (o.type === 'equip') { warehouse.push({ kind: 'equip', id: o.id }); restMsg = `搜刮：${EQUIPMENT[o.id].name} 入倉庫`; }
   else if (o.type === 'item') { warehouse.push({ kind: 'item', id: o.id }); restMsg = `搜刮：${ITEMS[o.id].name} 入倉庫`; }
-  else if (o.type === 'personality') { const r = roster[mi], tgt = Math.min(3, ARCHETYPES[r.archetypeId].tier + 1); const pool = ARCHETYPE_IDS.filter(id => ARCHETYPES[id].tier === tgt && id !== r.archetypeId); if (pool.length) { r.archetypeId = rngPick(pool); r.disciplineOverride = null; } restMsg = `${r.name} 個性提升為 ${ARCHETYPES[r.archetypeId].name}`; }
-  else if (o.type === 'discipline') { roster[mi].disciplineOverride = 'TAP'; restMsg = `${roster[mi].name} 待機改為點放 TAP`; }
 }
 
 // --- 喚醒：必須先把倉庫整理到 ≤ 當前上限（§5），再 +1 隊員（容量 +slotsPerMember）---
@@ -2907,11 +2934,11 @@ function drawCard(p, x, y, w, h, i) {
   ctx.fillStyle = p.state === 'EXTRACTED' ? '#5fd06b' : p.state === 'DEAD' ? '#8a6a6a' : 'rgba(205,214,224,0.65)';
   ctx.fillText(p.state === 'EXTRACTED' ? 'EXTRACTED' : p.state === 'EXTRACTING' ? 'EXTRACTING' : p.state, x + w - pad, y + 14);
 
-  // 個性 archetype（盯哨可靠度色提示）
+  // 個性 archetype（名稱色＝升階等級）
   const arch = p.archetype;
   ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas';
-  ctx.fillStyle = inactive ? '#6a727c' : TIER_COLOR[arch.tier];
-  ctx.fillText(arch.name, bx, y + 29);
+  ctx.fillStyle = inactive ? '#6a727c' : TIER_COLOR[p.tier || 0];
+  ctx.fillText(arch.name + (p.tier ? ' ' + '★'.repeat(p.tier) : ''), bx, y + 29);
 
   // 生命
   const hpFrac = clamp(p.hp / p.maxHp, 0, 1), low = hpFrac <= CONFIG.lowHpFrac && !inactive;
@@ -2971,8 +2998,8 @@ function drawRosterCard(r, x, y, w, h, i) {
   ctx.fillStyle = '#9fb3c8'; ctx.font = '11px Consolas';
   ctx.fillText(`HP ${CONFIG.unitHp + (r.bonusMaxHp || 0)}   感知x${r.strength.toFixed(1)}`, x + pad, y + 58);
   const arch = ARCHETYPES[r.archetypeId];
-  ctx.fillStyle = TIER_COLOR[arch.tier]; ctx.font = 'bold 11px Consolas';
-  ctx.fillText(arch.name, x + pad, y + 72);
+  ctx.fillStyle = TIER_COLOR[r.tier || 0]; ctx.font = 'bold 11px Consolas';
+  ctx.fillText(arch.name + (r.tier ? ' ' + '★'.repeat(r.tier) : ''), x + pad, y + 72);
   ctx.textAlign = 'left';
 }
 /* ---- 休息關：clickable rect 小工具 ---- */
@@ -3005,10 +3032,11 @@ function drawLoadoutCard(mi, x, y, w, h) {
   ctx.fillText(`HP ${CONFIG.unitHp + (r.bonusMaxHp || 0)}`, x + w - pad, y + 18);
   // 個性（§8：配槍前先看覆蓋力）
   const disc = r.disciplineOverride || arch.discipline;
-  ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas'; ctx.fillStyle = TIER_COLOR[arch.tier];
-  ctx.fillText(arch.name, x + pad, y + 36);
+  ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas'; ctx.fillStyle = TIER_COLOR[r.tier || 0];
+  const archLabel = arch.name + (r.tier ? ' ' + '★'.repeat(r.tier) : '');
+  ctx.fillText(archLabel, x + pad, y + 36);
   ctx.font = '10px Consolas'; ctx.fillStyle = '#8b97a5';
-  ctx.fillText(`${arch.facing}/${disc}${r.disciplineOverride ? '*' : ''} · 感知x${r.strength.toFixed(1)}`, x + pad + 4 + ctx.measureText(arch.name).width + 8, y + 36);
+  ctx.fillText(`${arch.desc} · 感知x${r.strength.toFixed(1)}`, x + pad + 4 + ctx.measureText(archLabel).width + 8, y + 36);
   // 機密檔案攜帶者：右上角徽章（攜帶者＝金色實心；其餘在可管理階段＝可點指派）。獨立攜帶格、單選。
   const bw2 = 80, bx2 = x + w - bw2 - 6, by2 = y + 24;
   if (r.carriesFile) {
