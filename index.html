@@ -4495,20 +4495,21 @@ let sandboxCfg = null;          // 上次設定（記憶 + localStorage）
 let sandboxLast = null;         // 上一場結果（撤離/陣亡）顯示用
 let sandboxEl = null, sandboxMembersEl = null, sandboxMapText = null, sandboxMapSel = null, sandboxMsgEl = null, sandboxResultEl = null, sandboxRows = [];
 
-const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', weaponId2: 'pistol', abilityId: 'heal', equipId: '' });
-const randomMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: rngPick(SANDBOX_WEAPON_IDS), weaponId2: rngPick(['pistol', 'knife', 'pistol', ...SANDBOX_WEAPON_IDS]), abilityId: rngPick(ABILITY_IDS), equipId: rngPick(['', ...EQUIP_IDS]) });
+const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', weaponId2: 'pistol', abilityId: 'heal', equipId: '', itemId: '' });
+const randomMember = () => { const wp = availPool('weapon', SANDBOX_WEAPON_IDS); return { archetypeId: rngPick(availPool('archetype', ARCHETYPE_IDS)), weaponId: rngPick(wp), weaponId2: rngPick(['pistol', 'knife', 'pistol', ...wp]), abilityId: rngPick(availPool('ability', ABILITY_IDS)), equipId: rngPick(['', ...availPool('equip', EQUIP_IDS)]), itemId: rngPick(['', '', ...availPool('item', ITEM_IDS)]) }; };
 function makeSandboxMember(m, used) {
   const r = makeRecruit(used);
-  if (m.archetypeId && ARCHETYPES[m.archetypeId]) r.archetypeId = m.archetypeId;
-  if (m.weaponId && WEAPONS[m.weaponId]) r.weaponId = m.weaponId;
-  r.weaponId2 = (m.weaponId2 && WEAPONS[m.weaponId2]) ? m.weaponId2 : FLOOR_WEAPON;   // 副武器（預設 pistol）
-  if (m.abilityId && ABILITIES[m.abilityId]) r.abilityId = m.abilityId;
-  r.equipId = (m.equipId && EQUIPMENT[m.equipId]) ? m.equipId : null;
+  if (m.archetypeId && ARCHETYPES[m.archetypeId] && isAvailable('archetype', m.archetypeId)) r.archetypeId = m.archetypeId;
+  if (m.weaponId && WEAPONS[m.weaponId] && isAvailable('weapon', m.weaponId)) r.weaponId = m.weaponId;
+  r.weaponId2 = (m.weaponId2 && WEAPONS[m.weaponId2] && isAvailable('weapon', m.weaponId2)) ? m.weaponId2 : FLOOR_WEAPON;   // 副武器（預設 pistol）
+  if (m.abilityId && ABILITIES[m.abilityId] && isAvailable('ability', m.abilityId)) r.abilityId = m.abilityId;
+  r.equipId = (m.equipId && EQUIPMENT[m.equipId] && isAvailable('equip', m.equipId)) ? m.equipId : null;
+  r.itemId = (m.itemId && ITEMS[m.itemId] && isAvailable('item', m.itemId)) ? m.itemId : null;   // 道具槽（未解鎖不套用）
   return r;
 }
 function loadSandboxCfg() { try { return JSON.parse(localStorage.getItem(SANDBOX_STORE_KEY) || 'null'); } catch (e) { return null; } }
 function saveSandboxCfg() {
-  const cfg = { members: sandboxRows.map(r => ({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value })), map: (sandboxMapText ? sandboxMapText.value : '').trim(), mapSel: sandboxMapSel ? sandboxMapSel.value : 'alpha' };
+  const cfg = { members: sandboxRows.map(r => ({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value, itemId: r.item.value })), map: (sandboxMapText ? sandboxMapText.value : '').trim(), mapSel: sandboxMapSel ? sandboxMapSel.value : 'alpha' };
   sandboxCfg = cfg; try { localStorage.setItem(SANDBOX_STORE_KEY, JSON.stringify(cfg)); } catch (e) {}
 }
 function sandboxMsg(t) { if (sandboxMsgEl) sandboxMsgEl.textContent = t || ''; }
@@ -4719,7 +4720,7 @@ function sandboxStart() {
   if (!mapObj || typeof mapObj !== 'object') { sandboxMsg('地圖無效'); return; }
   MAPS.__sandbox = normalizeForPlay(mapObj);
   const used = new Set();
-  roster = sandboxRows.map(r => makeSandboxMember({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value || null }, used));
+  roster = sandboxRows.map(r => makeSandboxMember({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value || null, itemId: r.item.value || null }, used));
   missionIndex = 0; roadCurrent = null; introActive = false; cutscene = null; introGuards = []; introConsole = null;
   forcedMap = '__sandbox'; fromSandbox = true; saveSandboxCfg();
   if (sandboxEl) sandboxEl.classList.remove('open');
@@ -4737,15 +4738,17 @@ function addMemberRow(m) {
   m = m || defaultMember();
   const row = document.createElement('div'); row.className = 'mem';
   const idx = document.createElement('span'); idx.className = 'idx'; row.appendChild(idx);
-  const a = sbSelect(ARCHETYPE_IDS, m.archetypeId, id => ARCHETYPES[id].name);
-  const w = sbSelect(SANDBOX_WEAPON_IDS, m.weaponId, id => WEAPONS[id].name);
-  const w2 = sbSelect(SANDBOX_WEAPON_IDS, m.weaponId2 || 'pistol', id => WEAPONS[id].name);
-  const k = sbSelect(ABILITY_IDS, m.abilityId, id => ABILITIES[id].name);
-  const e = sbSelect(EQUIP_IDS, m.equipId || '', id => EQUIPMENT[id].name, '(無裝備)');
+  const wp = availPool('weapon', SANDBOX_WEAPON_IDS);   // 未解鎖的武器不顯示（局外解鎖過濾）
+  const a = sbSelect(availPool('archetype', ARCHETYPE_IDS), m.archetypeId, id => ARCHETYPES[id].name);
+  const w = sbSelect(wp, m.weaponId, id => WEAPONS[id].name);
+  const w2 = sbSelect(wp, m.weaponId2 || 'pistol', id => WEAPONS[id].name);
+  const k = sbSelect(availPool('ability', ABILITY_IDS), m.abilityId, id => ABILITIES[id].name);
+  const e = sbSelect(availPool('equip', EQUIP_IDS), m.equipId || '', id => EQUIPMENT[id].name, '(無裝備)');
+  const it = sbSelect(availPool('item', ITEM_IDS), m.itemId || '', id => ITEMS[id].name, '(無道具)');   // 道具槽（含煙霧/手榴彈）
   const del = document.createElement('button'); del.className = 'x'; del.textContent = '✕';
-  const rec = { archetype: a, weapon: w, weapon2: w2, ability: k, equip: e, row };
+  const rec = { archetype: a, weapon: w, weapon2: w2, ability: k, equip: e, item: it, row };
   del.addEventListener('click', () => { const i = sandboxRows.indexOf(rec); if (i >= 0) sandboxRows.splice(i, 1); row.remove(); renumberMembers(); });
-  row.appendChild(a); row.appendChild(w); row.appendChild(w2); row.appendChild(k); row.appendChild(e); row.appendChild(del);
+  row.appendChild(a); row.appendChild(w); row.appendChild(w2); row.appendChild(k); row.appendChild(e); row.appendChild(it); row.appendChild(del);
   sandboxMembersEl.appendChild(row); sandboxRows.push(rec); renumberMembers();
 }
 function renumberMembers() { sandboxRows.forEach((r, i) => { const idx = r.row.querySelector('.idx'); if (idx) idx.textContent = '#' + (i + 1); }); }
@@ -4777,7 +4780,7 @@ function initSandboxUI() {
     sandboxResultEl = document.createElement('div'); sandboxResultEl.id = 'sbResult'; sandboxResultEl.style.margin = '4px 0'; card.appendChild(sandboxResultEl);
 
     const h3a = document.createElement('h3'); h3a.textContent = '小隊'; card.appendChild(h3a);
-    const cols = document.createElement('div'); cols.className = 'cols'; ['　', '個性', '主武器', '副武器', '技能', '裝備', '　'].forEach(t => { const s = document.createElement('span'); s.textContent = t; cols.appendChild(s); }); card.appendChild(cols);
+    const cols = document.createElement('div'); cols.className = 'cols'; ['　', '個性', '主武器', '副武器', '技能', '裝備', '道具', '　'].forEach(t => { const s = document.createElement('span'); s.textContent = t; cols.appendChild(s); }); card.appendChild(cols);
     sandboxMembersEl = document.createElement('div'); card.appendChild(sandboxMembersEl);
     const r1 = document.createElement('div'); r1.className = 'row';
     const addBtn = document.createElement('button'); addBtn.textContent = '＋ 新增隊員'; addBtn.addEventListener('click', () => addMemberRow());
