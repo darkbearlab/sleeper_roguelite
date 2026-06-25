@@ -1265,6 +1265,12 @@ const EVENTS = [
       { label: '強行突破（短促交火）', hint: '進入一場戰鬥', outcome: { type: 'combat', map: 'bravo' } },   // TODO 特製短地圖；先借 bravo
       { label: '繞遠路（安全離開）', outcome: { type: 'nothing' } },
     ] },
+  { id: 'wounded', title: '傷兵求救', text: '無線電傳來一名落單探員的求救——但這一帶剛有交火，可能是陷阱。',
+    choices: [
+      { label: '前往救援', hint: '70% 救出 → +1 隊員 / 否則陷阱 → 全隊 −12HP(未致命)', outcome: { type: 'gamble', p: 0.7, win: { type: 'recruit' }, lose: { type: 'damage', amt: 12 } } },
+      { label: '只標記位置、回收他丟下的物資（安全）', outcome: { type: 'ammo' } },
+      { label: '無視，離開', outcome: { type: 'nothing' } },
+    ] },
   // 場景化事件（kind:'scene'）：在戰鬥地圖上用 cutscene 對話演出。男孩＝meet/ambush 地圖的 civ。
   { id: 'boy', kind: 'scene', map: 'meet',
     onEnter: f => { f.boyMet = true; f.boyHostile = srand() < 0.5; },   // 隱藏身分(吃種子)：友善(父親 sleeper) / 敵意(被策反)
