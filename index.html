@@ -263,7 +263,16 @@ const LOOT_EQUIP_IDS = EQUIP_IDS.slice();
    一開始基礎內容全可用；未來新內容掛進 UNLOCKS：里程碑解 archetype/技能、情報點解 武器/裝備。
    解鎖只是「進池」，遊戲中仍 RNG 取得。鉤子先做、內容之後慢慢加。localStorage 持久。
    ===================================================================== */
-CONFIG.meta = { intelPerMission: 10, intelWin: 50 };   // 結算給的情報點（面板可調）
+// 結算給的情報點（面板可調）。設計：加分為主、扣分只是「扣意思的」（封頂於總得分的一小比例）。
+CONFIG.meta = {
+  intelPerMission: 10,     // 每清一場戰鬥
+  intelWin: 50,            // 通關保底（走完整條路線）
+  intelPerEvent: 8,        // 戰役中每處理一個事件節點
+  intelPerKIA: 4,          // 每名我方陣亡的扣分（象徵性）
+  kiaPenaltyCapFrac: 0.25, // 扣分上限＝該局總得分 × 此比例（確保扣分永遠只是小意思）
+};
+let runStats = { events: 0, kia: 0 };   // 本局累計：處理過的事件數 / 陣亡人數（initRun 重置）
+let lastIntelBreakdown = null;          // 上一局情報點明細（run-end 畫面顯示）
 const META_KEY = 'sleeper_meta_v1';
 let meta = { intel: 0, unlocked: { weapon: {}, equip: {}, archetype: {}, ability: {} }, stats: { runs: 0, wins: 0, missions: 0, winArch: {} } };
 function normalizeMeta() { if (!meta || typeof meta !== 'object') meta = {}; meta.intel = meta.intel || 0; meta.unlocked = meta.unlocked || {}; for (const k of ['weapon', 'equip', 'archetype', 'ability']) meta.unlocked[k] = meta.unlocked[k] || {}; meta.stats = meta.stats || {}; meta.stats.winArch = meta.stats.winArch || {}; }
@@ -282,8 +291,18 @@ function checkMilestoneUnlocks() { let any = false; for (const u of UNLOCKS) if 
 function unlockWithIntel(kind, id) { const u = unlockDef(kind, id); if (!u || u.via !== 'intel' || meta.unlocked[kind][id] || meta.intel < u.cost) return false; meta.intel -= u.cost; meta.unlocked[kind][id] = true; saveMeta(); return true; }
 function metaOnRunEnd(won) {   // run 結束結算：情報點 + stats + 里程碑自動解鎖 + 存檔
   meta.stats.runs = (meta.stats.runs || 0) + 1;
-  meta.stats.missions = (meta.stats.missions || 0) + (typeof missionIndex === 'number' ? missionIndex : 0);
-  meta.intel += CONFIG.meta.intelPerMission * (typeof missionIndex === 'number' ? missionIndex : 0) + (won ? CONFIG.meta.intelWin : 0);
+  const mi = (typeof missionIndex === 'number' ? missionIndex : 0);
+  meta.stats.missions = (meta.stats.missions || 0) + mi;
+  const M = CONFIG.meta, rs = runStats || { events: 0, kia: 0 };
+  const missionPart = M.intelPerMission * mi;            // 清關進度
+  const winPart = won ? M.intelWin : 0;                  // 通關保底
+  const eventPart = M.intelPerEvent * (rs.events || 0);  // 事件記錄加分
+  const gross = missionPart + winPart + eventPart;
+  const rawPenalty = M.intelPerKIA * (rs.kia || 0);
+  const penalty = Math.min(rawPenalty, Math.floor(gross * M.kiaPenaltyCapFrac));   // 陣亡扣分封頂＝只是扣意思
+  const gain = Math.max(0, gross - penalty);
+  meta.intel += gain;
+  lastIntelBreakdown = { mi, missionPart, winPart, eventPart, events: rs.events || 0, kia: rs.kia || 0, penalty, gain, won };
   if (won) { meta.stats.wins = (meta.stats.wins || 0) + 1; for (const r of (roster || [])) if (r && r.archetypeId) meta.stats.winArch[r.archetypeId] = (meta.stats.winArch[r.archetypeId] || 0) + 1; }
   checkMilestoneUnlocks(); saveMeta();
 }
@@ -1166,6 +1185,7 @@ function releasePointer() { if (document.exitPointerLock) document.exitPointerLo
 function initRun() {
   srandSeed(Math.floor(Math.random() * 0xFFFFFFFF));   // 本局非戰鬥 RNG 種子（之後全部可重現）
   runFlags = {}; pendingEvents = []; eventSeen = [];    // 戰役旗標/事件佇列/已見事件重置
+  runStats = { events: 0, kia: 0 };                     // 本局情報點累計（事件數/陣亡數）重置
   roster = baseRoster(); missionIndex = 0;   // baseRoster 僅後備；序章會以三人陣容取代
   warehouse = []; backpack = []; drops = [];
   ammoStock = {}; for (const id of WEAPON_IDS) ammoStock[id] = WEAPONS[id].silent ? CONFIG.ammo.subsonicStart : CONFIG.ammo.stockStart;  // 共用彈藥儲備（消音武器＝稀少亞音速彈）
@@ -1356,6 +1376,7 @@ function applyEventOutcome(o, mi) {
   }
 }
 function enterEvent() {
+  runStats.events++;   // 戰役中每進一個事件節點＝情報點加分（不論後續分支/是否接戰）
   let ev = null;
   while (pendingEvents.length && !ev) { const id = pendingEvents.shift(); ev = EVENTS.find(e => e.id === id); }   // 被預定的後續(報位/伏擊…)優先；格子仍顯示 ?（shift 須先取出再 find，勿放進 predicate）
   if (!ev) {   // 否則隨機抽：濾掉已見/不符 cond/scripted(只能被佇列觸發)
@@ -1961,6 +1982,7 @@ function killUnit(u) {
     if (u.hasFile) { u.hasFile = false; fileDrop = { x: u.pos.x, y: u.pos.y }; Sfx.play('death', u.pos); }   // 攜帶者陣亡→機密檔案掉在原地，待人回收（不回收就撤離＝任務失敗）
     const wasControlled = (u.state === 'CONTROLLED') || controlledId === u.id;
     u.state = 'DEAD'; deadCount++;
+    if (!fromSandbox && !playtestMode && !introActive) runStats.kia++;   // 戰役中陣亡才計入情報點扣分（序章/沙盒/試玩不算）
     hitstop(CONFIG.juice.deathHitstop);   // 我方陣亡：只頓一下（不帶鏡頭去死亡點，激戰中不干擾操作）
     if (wasControlled) { controlledId = null; autoPossess(u.pos); }
   }
@@ -3709,25 +3731,40 @@ function drawRestTutorial() {
   ctx.textAlign = 'left';
   lines.forEach((ln, i) => { ctx.fillStyle = ln[1]; ctx.font = (i === 0 ? 'bold 13px' : '12px') + ' Consolas'; ctx.fillText(ln[0], x + 12, y + 24 + i * 18); });
 }
+// 情報點明細（run-end 共用）：加分為主、陣亡只小扣。回傳下一行 y。
+function drawIntelBreakdown(cx, y) {
+  const b = lastIntelBreakdown; if (!b) return y;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd27a'; ctx.font = 'bold 22px Consolas'; ctx.fillText('情報點 +' + b.gain, cx, y); y += 26;
+  ctx.fillStyle = 'rgba(180,195,210,0.78)'; ctx.font = '13px Consolas';
+  const parts = ['清關 ' + b.mi + '　+' + b.missionPart];
+  parts.push('通關保底 ' + (b.won ? '+' + b.winPart : '—'));
+  parts.push('事件 ' + b.events + '　+' + b.eventPart);
+  parts.push('陣亡 ' + b.kia + (b.penalty ? '　−' + b.penalty : '　0'));
+  ctx.fillText(parts.join('　·　'), cx, y); y += 20;
+  return y;
+}
 function drawRunEnd() {
   ctx.fillStyle = 'rgba(8,10,14,0.95)'; ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff5d5d'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN FAILED', cv.width / 2, cv.height / 2 - 56);
+  ctx.fillStyle = '#ff5d5d'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN FAILED', cv.width / 2, cv.height / 2 - 80);
   const lostFile = loseReason === '機密檔案遺失';
   ctx.fillStyle = '#cdd6e0'; ctx.font = '18px Consolas';
-  ctx.fillText(`${lostFile ? '機密檔案遺失' : '全滅'} — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 14);
+  ctx.fillText(`${lostFile ? '機密檔案遺失' : '全滅'} — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 40);
   ctx.fillStyle = '#9fb3c8'; ctx.font = '14px Consolas';
-  ctx.fillText(lostFile ? '（全員撤離時檔案不在身上 = 任務失敗）' : '（撤出 0 人 = run 結束）', cv.width / 2, cv.height / 2 + 12);
-  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, cv.height / 2 + 64);
+  ctx.fillText(lostFile ? '（全員撤離時檔案不在身上 = 任務失敗）' : '（撤出 0 人 = run 結束）', cv.width / 2, cv.height / 2 - 16);
+  let y = drawIntelBreakdown(cv.width / 2, cv.height / 2 + 24);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, y + 40);
   ctx.textAlign = 'left';
 }
 function drawRunWin() {
   ctx.fillStyle = 'rgba(8,14,12,0.95)'; ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN COMPLETE', cv.width / 2, cv.height / 2 - 56);
-  ctx.fillStyle = '#cdd6e0'; ctx.font = '18px Consolas'; ctx.fillText(`走完路線 — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 14);
-  ctx.fillStyle = '#9fb'; ctx.font = '14px Consolas'; ctx.fillText(`生還陣容: ${roster.map(r => r.name).join(', ')}`, cv.width / 2, cv.height / 2 + 12);
-  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, cv.height / 2 + 64);
+  ctx.fillStyle = '#5fd06b'; ctx.font = 'bold 46px Consolas'; ctx.fillText('RUN COMPLETE', cv.width / 2, cv.height / 2 - 80);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '18px Consolas'; ctx.fillText(`走完路線 — 清掉 ${missionIndex} 場戰鬥`, cv.width / 2, cv.height / 2 - 40);
+  ctx.fillStyle = '#9fb'; ctx.font = '14px Consolas'; ctx.fillText(`生還陣容: ${(roster || []).map(r => r.name).join(', ')}`, cv.width / 2, cv.height / 2 - 16);
+  let y = drawIntelBreakdown(cv.width / 2, cv.height / 2 + 24);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '16px Consolas'; ctx.fillText('按 R / 點擊 重新開始一輪 run', cv.width / 2, y + 40);
   ctx.textAlign = 'left';
 }
 
