@@ -1392,6 +1392,14 @@ function applyOffer(o, mi) {
   else if (o.type === 'equip') { warehouse.push({ kind: 'equip', id: o.id }); restMsg = `搜刮：${EQUIPMENT[o.id].name} 入倉庫`; }
   else if (o.type === 'item') { warehouse.push({ kind: 'item', id: o.id }); restMsg = `搜刮：${ITEMS[o.id].name} 入倉庫`; }
 }
+// 休息轉職（pivot）：把某員 archetype 換成下一型，換樹但保留已學被動；後續升階抽新樹的對應階
+function cycleArchetype(mi) {
+  const r = roster[mi]; if (!r) return;
+  const i = ARCHETYPE_IDS.indexOf(r.archetypeId);
+  r.archetypeId = ARCHETYPE_IDS[(i + 1) % ARCHETYPE_IDS.length];
+  r.disciplineOverride = null;
+  restMsg = `${r.name} 轉職為 ${ARCHETYPES[r.archetypeId].name}（保留已學被動；後續升階抽新樹）`;
+}
 
 // --- 喚醒：必須先把倉庫整理到 ≤ 當前上限（§5），再 +1 隊員（容量 +slotsPerMember）---
 function restDoAwaken() {
@@ -3154,13 +3162,16 @@ function drawLoadoutCard(mi, x, y, w, h) {
   ctx.fillText(`[${mi + 1}] ${r.name}`, x + pad, y + 18);
   ctx.textAlign = 'right'; ctx.font = '11px Consolas'; ctx.fillStyle = '#9fb3c8';
   ctx.fillText(`HP ${CONFIG.unitHp + (r.bonusMaxHp || 0)}`, x + w - pad, y + 18);
-  // 個性（§8：配槍前先看覆蓋力）
-  const disc = r.disciplineOverride || arch.discipline;
+  // 個性 archetype：管理階段點名稱＝轉職(pivot 換樹、保留已學被動)。次行＝已學被動 / 性格描述
+  const canSwap = manage && restPhase !== 'TARGET';
   ctx.textAlign = 'left'; ctx.font = 'bold 11px Consolas'; ctx.fillStyle = TIER_COLOR[r.tier || 0];
-  const archLabel = arch.name + (r.tier ? ' ' + '★'.repeat(r.tier) : '');
+  const archLabel = (canSwap ? '↻ ' : '') + arch.name + (r.tier ? ' ' + '★'.repeat(r.tier) : '');
   ctx.fillText(archLabel, x + pad, y + 36);
-  ctx.font = '10px Consolas'; ctx.fillStyle = '#8b97a5';
-  ctx.fillText(`${arch.desc} · 感知x${r.strength.toFixed(1)}`, x + pad + 4 + ctx.measureText(archLabel).width + 8, y + 36);
+  if (canSwap) pushRect(x + pad, y + 26, ctx.measureText(archLabel).width + 6, 13, () => cycleArchetype(mi));
+  ctx.font = '10px Consolas';
+  const pvNames = (r.passives || []).map(pid => PASSIVES[pid] ? PASSIVES[pid].name : pid);
+  if (pvNames.length) { ctx.fillStyle = '#9fd0e0'; ctx.fillText('[' + pvNames.join('/') + ']', x + pad + 4 + ctx.measureText(archLabel).width + 8, y + 36); }
+  else { ctx.fillStyle = '#8b97a5'; ctx.fillText(arch.desc, x + pad + 4 + ctx.measureText(archLabel).width + 8, y + 36); }
   // 機密檔案攜帶者：右上角徽章（攜帶者＝金色實心；其餘在可管理階段＝可點指派）。獨立攜帶格、單選。
   const bw2 = 80, bx2 = x + w - bw2 - 6, by2 = y + 24;
   if (r.carriesFile) {
