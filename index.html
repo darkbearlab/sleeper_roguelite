@@ -442,8 +442,9 @@ const ROADMAP = {
     { id: 7, col: 3, row: 1, type: 'REST' },
     { id: 8, col: 3, row: 3, type: 'ARMORY' },
     { id: 9, col: 4, row: 2, type: 'COMBAT', map: 'bravo' },  // 終點＝門禁設施（必經，保證體驗）
+    { id: 10, col: 1, row: 1, type: 'EVENT' },                 // 事件格（風險/取捨/歪 build）
   ],
-  edges: [[0, 2], [0, 3], [1, 3], [1, 4], [2, 5], [3, 5], [3, 6], [4, 6], [5, 7], [5, 8], [6, 8], [7, 9], [8, 9]],
+  edges: [[0, 2], [0, 3], [0, 10], [1, 3], [1, 4], [2, 5], [3, 5], [3, 6], [4, 6], [5, 7], [5, 8], [6, 8], [7, 9], [8, 9], [10, 5]],
 };
 const roadAdj = {};
 for (const n of ROADMAP.nodes) roadAdj[n.id] = [];
@@ -1099,6 +1100,7 @@ function selectNode(id) {
   const t = roadNode(id).type;
   if (t === 'COMBAT') startMission();
   else if (t === 'ARMORY') enterArmory();
+  else if (t === 'EVENT') enterEvent();
   else enterRest();
 }
 
@@ -1171,6 +1173,88 @@ function settlePromote(mi, pid) {
 }
 function settleSkip() { settleMsg = '（本場未升階）'; settlePhase = 'DONE'; }
 function settleAdvance() { advanceNode(); }   // → 路線圖 / RUNWIN
+
+/* =====================================================================
+   事件節點（scene EVENT）：風險/取捨/歪 build 集中地。資料驅動 EVENTS + applyEventOutcome。
+   準則：每事件都有安全選項、風險知情、下檔有上限不致命。outcome 只用現有資源(HP/彈/裝備/單位/被動)。
+   ★combat hook：outcome {type:'combat',map} → forcedMap + startMission（接特製地圖；打完走一般結算→advanceNode）。
+   ===================================================================== */
+let eventCur = null, eventPhase = 'CHOICE', eventPendingChoice = null, eventMsg = '', eventRects = [], eventSeen = [];
+const rmaxhp = (r) => CONFIG.unitHp + (r.bonusMaxHp || 0) + ((r.equipId && EQUIPMENT[r.equipId] && EQUIPMENT[r.equipId].fx.maxHpAdd) || 0);
+const hasGear = () => warehouse.some(it => it.kind === 'equip' || it.kind === 'item');
+function takeGear() { const i = warehouse.findIndex(it => it.kind === 'equip' || it.kind === 'item'); if (i >= 0) { const it = warehouse[i]; warehouse.splice(i, 1); return (it.kind === 'equip' ? EQUIPMENT : ITEMS)[it.id].name; } return null; }
+function relicPassive(mi) {   // 歪 build：給一員一條尚未擁有的「任意樹」被動（off-tier，不佔升階）
+  const r = roster[mi]; if (!r) return null;
+  const pool = Object.keys(PASSIVES).filter(id => (r.passives || []).indexOf(id) < 0);
+  if (!pool.length) return null;
+  const id = rngPick(pool); r.passives = (r.passives || []).concat([id]); return PASSIVES[id].name;
+}
+const EVENT_CFG = { armoryHurt: 12, armoryWinP: 0.75, deserterHp: 0.5 };
+// 事件目錄（種子；內容之後一個一個敲）。choice：label/hint?/outcome/need?('target')/req?('gear')
+const EVENTS = [
+  { id: 'armory', title: '封鎖的軍械庫', text: '上鎖的軍械庫，門撬得開，但裡頭可能設了詭雷。',
+    choices: [
+      { label: '撬鎖搜刮', hint: `${Math.round(EVENT_CFG.armoryWinP*100)}% 稀有物資 / 否則詭雷 −全隊${EVENT_CFG.armoryHurt}HP`, outcome: { type: 'gamble', p: EVENT_CFG.armoryWinP, win: { type: 'loot', n: 2 }, lose: { type: 'damage', amt: EVENT_CFG.armoryHurt } } },
+      { label: '只拿外圍彈藥（安全）', outcome: { type: 'ammo' } },
+      { label: '不碰，離開', outcome: { type: 'nothing' } },
+    ] },
+  { id: 'broker', title: '黑市掮客', text: '一名掮客願意拿稀有貨跟你換點裝備。',
+    choices: [
+      { label: '用一件裝備換稀有武器', req: 'gear', outcome: { type: 'trade', cost: 'gear', gain: { type: 'weapon' } } },
+      { label: '用一件裝備換大量彈藥', req: 'gear', outcome: { type: 'trade', cost: 'gear', gain: { type: 'ammo', big: true } } },
+      { label: '只看不買', outcome: { type: 'nothing' } },
+    ] },
+  { id: 'veteran', title: '老兵指點', text: '一名退役老兵願意指點一名隊員，但要點「拜師禮」。',
+    choices: [
+      { label: '受訓（指定一員學一條跨樹被動）', req: 'gear', need: 'target', outcome: { type: 'relic', cost: 'gear' } },
+      { label: '婉拒', outcome: { type: 'nothing' } },
+    ] },
+  { id: 'ambush', title: '巷弄埋伏', text: '前方巷口突然冒出一支巡邏隊，情況很快會失控。',
+    choices: [
+      { label: '強行突破（短促交火）', hint: '進入一場戰鬥', outcome: { type: 'combat', map: 'bravo' } },   // TODO 特製短地圖；先借 bravo
+      { label: '繞遠路（安全離開）', outcome: { type: 'nothing' } },
+    ] },
+];
+function eventChoosable(c) { return !(c.req === 'gear' && !hasGear()); }
+function applyEventOutcome(o, mi) {
+  if (!o) return '無事發生';
+  switch (o.type) {
+    case 'nothing': return '離開了，什麼也沒發生';
+    case 'ammo': { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * (o.big ? 6 : 3); ammoStock[id] = (ammoStock[id] || 0) + amt; return `${WEAPONS[id].name}彈 +${amt}`; }
+    case 'weapon': { const id = o.id || rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); return `取得武器 ${WEAPONS[id].name}`; }
+    case 'equip': { const id = o.id || rngPick(LOOT_EQUIP_IDS); warehouse.push({ kind: 'equip', id }); return `取得裝備 ${EQUIPMENT[id].name}`; }
+    case 'item': { const id = o.id || rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); return `取得道具 ${ITEMS[id].name}`; }
+    case 'loot': { const out = []; for (let i = 0; i < (o.n || 1); i++) out.push(applyEventOutcome(rngPick([{ type: 'weapon' }, { type: 'equip' }, { type: 'item' }]))); return out.join('、'); }
+    case 'heal': { for (const r of roster) r.hp = Math.min(rmaxhp(r), (r.hp || 0) + (o.amt || 20)); return `全隊回復 ${o.amt || 20}HP`; }
+    case 'damage': { for (const r of roster) r.hp = Math.max(1, (r.hp != null ? r.hp : rmaxhp(r)) - (o.amt || 10)); return `全隊 −${o.amt || 10}HP（未致命）`; }
+    case 'maxhp': { if (mi != null && roster[mi]) { roster[mi].bonusMaxHp = (roster[mi].bonusMaxHp || 0) + (o.amt || 15); return `${roster[mi].name} +${o.amt || 15} maxHP`; } for (const r of roster) r.bonusMaxHp = (r.bonusMaxHp || 0) + (o.amt || 10); return `全隊 +${o.amt || 10} maxHP`; }
+    case 'recruit': { if (typeof restDoAwaken === 'function') { /* 直接加一名 */ } const rec = makeRecruit(new Set(roster.map(r => r.name))); if (typeof autoEquipFromWarehouse === 'function') autoEquipFromWarehouse(rec); roster.push(rec); return `${rec.name} 加入隊伍`; }
+    case 'relic': { let paid = ''; if (o.cost === 'gear') { const g = takeGear(); if (!g) return '沒有可付的拜師禮'; paid = `（付出 ${g}）`; } const nm = relicPassive(mi); return nm ? `${roster[mi].name} 習得「${nm}」${paid}` : `${roster[mi] ? roster[mi].name : '隊員'} 已無可學被動`; }
+    case 'trade': { let paid = ''; if (o.cost === 'gear') { const g = takeGear(); if (!g) return '沒有可付的代價'; paid = `付出 ${g}，`; } return paid + applyEventOutcome(o.gain, mi); }
+    case 'gamble': { if (Math.random() < (o.p || 0.5)) return '成功！' + applyEventOutcome(o.win, mi); return '失手！' + applyEventOutcome(o.lose, mi); }
+    case 'combat': { forcedMap = o.map || 'bravo'; eventCur = null; startMission(); return null; }   // ★hook：接特製地圖；打完走一般結算
+    default: return '無事發生';
+  }
+}
+function enterEvent() {
+  let pool = EVENTS.filter(e => eventSeen.indexOf(e.id) < 0);
+  if (!pool.length) { eventSeen = []; pool = EVENTS.slice(); }
+  eventCur = rngPick(pool); eventSeen.push(eventCur.id);
+  eventPhase = 'CHOICE'; eventPendingChoice = null; eventMsg = ''; scene = 'EVENT'; releasePointer();
+}
+function eventPick(ci) {
+  if (eventPhase !== 'CHOICE' || !eventCur) return;
+  const c = eventCur.choices[ci]; if (!c || !eventChoosable(c)) return;
+  if (c.need === 'target') { eventPendingChoice = c; eventPhase = 'TARGET'; eventMsg = ''; return; }
+  const msg = applyEventOutcome(c.outcome, null);
+  if (msg == null) return;   // combat：已離開 EVENT 場景
+  eventMsg = msg; eventPhase = 'DONE';
+}
+function eventApplyTarget(mi) {
+  if (eventPhase !== 'TARGET' || !eventPendingChoice || mi < 0 || mi >= roster.length) return;
+  eventMsg = applyEventOutcome(eventPendingChoice.outcome, mi); eventPendingChoice = null; eventPhase = 'DONE';
+}
+function eventAdvance() { advanceNode(); }
 
 /* =====================================================================
    第0關（序章 / 教學）：cutscene 導演 + 演出 actor。流程見對話腳本 introBeats。
@@ -2289,6 +2373,7 @@ cv.addEventListener('click', () => {
   }
   else if (scene === 'REST' || scene === 'ARMORY') restClick(mouse.mx, mouse.my);
   else if (scene === 'SETTLE') settleClick(mouse.mx, mouse.my);
+  else if (scene === 'EVENT') eventClick(mouse.mx, mouse.my);
   else if (scene === 'RUNEND' || scene === 'RUNWIN') goMenu();
   else if (scene === 'MENU') menuClick(mouse.mx, mouse.my);
   // EDITOR：互動在 mousedown/up 處理（支援拖拉），click 不處理
@@ -2379,6 +2464,7 @@ window.addEventListener('keydown', e => {
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') goMenu(); return; }
   if (scene === 'MENU') return;   // 主選單以滑鼠點選
   if (scene === 'SETTLE') { if (k === 'enter' || k === ' ') { if (settlePhase === 'PICK') settleSkip(); else if (settlePhase === 'DONE') settleAdvance(); } return; }   // 結算以滑鼠點選；Enter 略過/前進
+  if (scene === 'EVENT') { if ((k === 'enter' || k === ' ') && eventPhase === 'DONE') eventAdvance(); return; }   // 事件以滑鼠點選；Enter 前進
   if (scene === 'SANDBOX') return;   // 設定畫面以 DOM 表單操作，不接遊戲鍵
 
   // --- COMBAT ---
@@ -2515,6 +2601,7 @@ function draw() {
   if (scene === 'EDITOR') { drawEditor(); return; }
   if (scene === 'REST') { drawRest(); return; }
   if (scene === 'SETTLE') { drawSettle(); return; }
+  if (scene === 'EVENT') { drawEvent(); return; }
   if (scene === 'ARMORY') { drawArmory(); return; }
   if (scene === 'RUNEND') { drawRunEnd(); return; }
   if (scene === 'RUNWIN') { drawRunWin(); return; }
@@ -3533,6 +3620,54 @@ function drawSettle() {
 }
 function settleClick(mx, my) { for (const r of settleRects) if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) { r.fn(); return; } }
 
+/* ---- 事件畫面 ---- */
+function eBtn(x, y, w, h, label, fn) {
+  ctx.fillStyle = 'rgba(54,46,74,0.95)'; ctx.fillRect(x, y, w, h);
+  ctx.lineWidth = 1.4; ctx.strokeStyle = 'rgba(170,140,220,0.85)'; ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = '#e6dcff'; ctx.font = 'bold 15px Consolas'; ctx.textAlign = 'center'; ctx.fillText(label, x + w / 2, y + h / 2 + 5);
+  eventRects.push({ x, y, w, h, fn });
+}
+function drawEvent() {
+  eventRects = [];
+  ctx.fillStyle = 'rgba(14,10,20,0.97)'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  const ev = eventCur || { title: '事件', text: '', choices: [] };
+  ctx.fillStyle = '#c9a0ff'; ctx.font = 'bold 28px Consolas'; ctx.fillText('? ' + ev.title, cv.width / 2, 70);
+  ctx.fillStyle = '#cdd6e0'; ctx.font = '14px Consolas'; ctx.fillText(ev.text, cv.width / 2, 108);
+  if (eventPhase === 'CHOICE') {
+    const cw = 480, gap = 16; let y = 160;
+    ev.choices.forEach((c, i) => {
+      const on = eventChoosable(c), x = cv.width / 2 - cw / 2;
+      ctx.fillStyle = on ? 'rgba(40,34,58,0.95)' : 'rgba(34,34,40,0.6)'; ctx.fillRect(x, y, cw, 62);
+      ctx.lineWidth = 1.6; ctx.strokeStyle = on ? 'rgba(160,130,220,0.85)' : 'rgba(90,90,100,0.5)'; ctx.strokeRect(x, y, cw, 62);
+      ctx.textAlign = 'left'; ctx.fillStyle = on ? '#e6dcff' : '#6a727c'; ctx.font = 'bold 15px Consolas'; ctx.fillText(c.label, x + 16, y + 26);
+      ctx.font = '11px Consolas';
+      if (!on) { ctx.fillStyle = '#8a6a6a'; ctx.fillText('（需要可付出的裝備/道具）', x + 16, y + 46); }
+      else if (c.hint) { ctx.fillStyle = '#a89bc0'; ctx.fillText(c.hint, x + 16, y + 46); }
+      ctx.textAlign = 'center';
+      if (on) eventRects.push({ x, y, w: cw, h: 62, fn: () => eventPick(i) });
+      y += 62 + gap;
+    });
+  } else if (eventPhase === 'TARGET') {
+    ctx.fillStyle = '#cdd6e0'; ctx.font = 'bold 16px Consolas'; ctx.fillText('▾ 指定一名隊員', cv.width / 2, 160);
+    const n = roster.length, cw = 200, gap = 16, totalW = n * cw + (n - 1) * gap, x0 = (cv.width - totalW) / 2, y = 188, ch = 120;
+    roster.forEach((r, i) => {
+      const x = x0 + i * (cw + gap);
+      ctx.fillStyle = 'rgba(40,34,58,0.92)'; ctx.fillRect(x, y, cw, ch); ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(160,130,220,0.7)'; ctx.strokeRect(x, y, cw, ch);
+      ctx.textAlign = 'left'; ctx.fillStyle = '#e6dcff'; ctx.font = 'bold 14px Consolas'; ctx.fillText(r.name, x + 12, y + 24);
+      ctx.fillStyle = TIER_COLOR[r.tier || 0]; ctx.font = '12px Consolas'; ctx.fillText(ARCHETYPES[r.archetypeId].name + ' ' + '★'.repeat(r.tier || 0), x + 12, y + 44);
+      ctx.fillStyle = '#9fd0e0'; ctx.font = '10px Consolas'; (r.passives || []).forEach((pid, j) => ctx.fillText('· ' + (PASSIVES[pid] ? PASSIVES[pid].name : pid), x + 14, y + 62 + j * 14));
+      eventRects.push({ x, y, w: cw, h: ch, fn: () => eventApplyTarget(i) });
+    });
+    ctx.textAlign = 'center'; eBtn(cv.width / 2 - 70, y + ch + 24, 140, 36, '← 返回', () => { eventPhase = 'CHOICE'; eventPendingChoice = null; });
+  } else {   // DONE
+    ctx.fillStyle = '#7fffa8'; ctx.font = 'bold 18px Consolas'; ctx.fillText(eventMsg, cv.width / 2, 210);
+    eBtn(cv.width / 2 - 100, 260, 200, 48, '前進 →', () => eventAdvance());
+  }
+  ctx.textAlign = 'left';
+}
+function eventClick(mx, my) { for (const r of eventRects) if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) { r.fn(); return; } }
+
 /* ---- 路線圖畫面 ---- */
 function drawRoadmap() {
   ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height);
@@ -3566,7 +3701,7 @@ function drawRoadmap() {
     const isBravo = n.type === 'COMBAT' && (n.map === 'bravo');
     const isOutpost = n.type === 'COMBAT' && (n.map === 'outpost');
     const isLanes = n.type === 'COMBAT' && (n.map === 'lanes');
-    const base = n.type === 'REST' ? 150 : n.type === 'ARMORY' ? 48 : (isBravo ? 35 : isOutpost ? 110 : isLanes ? 190 : 8);   // hue: 開闊紅、門禁橙、前哨綠、哨廊藍、軍械庫金、休息青
+    const base = n.type === 'REST' ? 150 : n.type === 'ARMORY' ? 48 : n.type === 'EVENT' ? 280 : (isBravo ? 35 : isOutpost ? 110 : isLanes ? 190 : 8);   // hue: 開闊紅、門禁橙、前哨綠、哨廊藍、軍械庫金、休息青、事件紫
     let fill, stroke;
     if (done) { fill = 'rgba(70,80,90,0.5)'; stroke = 'rgba(120,130,140,0.6)'; }
     else if (isAvail) { fill = hsl(base, 65, hover ? 52 : 42); stroke = '#ffffff'; }
@@ -3574,8 +3709,8 @@ function drawRoadmap() {
     if (isAvail) { const a = 0.4 + 0.4 * Math.sin(simTime ? simTime * 5 : 0); ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(p.x, p.y, 30, 0, Math.PI * 2); ctx.stroke(); }
     ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(p.x, p.y, hover ? 24 : 22, 0, Math.PI * 2); ctx.fill();
     ctx.lineWidth = isAvail ? 2.5 : 1.5; ctx.strokeStyle = stroke; ctx.beginPath(); ctx.arc(p.x, p.y, hover ? 24 : 22, 0, Math.PI * 2); ctx.stroke();
-    const glyph = done ? '✓' : n.type === 'REST' ? '＋' : n.type === 'ARMORY' ? '★' : (isBravo ? '⊟' : '⚔');
-    const sub = n.type === 'REST' ? '休息' : n.type === 'ARMORY' ? '軍械庫' : MAPS[n.map || 'alpha'].label;
+    const glyph = done ? '✓' : n.type === 'REST' ? '＋' : n.type === 'ARMORY' ? '★' : n.type === 'EVENT' ? '?' : (isBravo ? '⊟' : '⚔');
+    const sub = n.type === 'REST' ? '休息' : n.type === 'ARMORY' ? '軍械庫' : n.type === 'EVENT' ? '事件' : MAPS[n.map || 'alpha'].label;
     ctx.fillStyle = done ? '#aab' : '#ffffff'; ctx.font = 'bold 16px Consolas';
     ctx.fillText(glyph, p.x, p.y + 6);
     ctx.fillStyle = isAvail ? '#e8eef5' : 'rgba(180,190,200,0.6)'; ctx.font = '11px Consolas';
