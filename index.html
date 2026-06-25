@@ -957,6 +957,7 @@ let prisoners;               // 戰鬥中的俘虜 [{pos, freed}]（E 釋放→�
 let restPhase;               // 休息關流程：CHOICE | OFFERS | TARGET | DONE
 let restOffers, restPick, restPendingUpgrade;  // 搜刮抽選 / 已選 / 待指定目標的升級
 let restSel = null;          // 管理介面：選取中的物品 {type:'wh'|'mw'|'ma', idx/mi}
+let restWslot = {};          // 各員配裝卡正在編輯的武器槽（mi→1 主/2 副）
 let restRects = [];          // 休息關/軍械庫可點擊區域（每幀於 draw 重建）
 let armoryOffers = null;     // 軍械庫節點的三選一
 let roadCompleted, roadAvailable, roadCurrent;  // 路線圖狀態
@@ -1438,19 +1439,21 @@ function restDoContinue() {
   else advanceNode();                                             // 正式 REST 節點 → 開放後繼
 }
 
-// --- 配裝/彈藥管理（CHOICE 與 DONE 階段皆可操作）---
-function setMemberWeapon(mi, newId) {
-  const r = roster[mi], oldId = r.weaponId;
-  if (oldId !== newId) { if (!isInfiniteAmmo(oldId)) ammoStock[oldId] = (ammoStock[oldId] || 0) + (r.allocatedAmmo || 0); r.allocatedAmmo = 0; }
-  r.weaponId = newId;
+// --- 配裝/彈藥管理（CHOICE 與 DONE 階段皆可操作）。slot：1=主武器 / 2=副武器 ---
+const WF = (slot) => (slot === 2 ? 'weaponId2' : 'weaponId');     // 武器欄位
+const AF = (slot) => (slot === 2 ? 'allocatedAmmo2' : 'allocatedAmmo');  // 備彈欄位
+function setMemberWeapon(mi, newId, slot = 1) {
+  const r = roster[mi], wf = WF(slot), af = AF(slot), oldId = r[wf];
+  if (oldId !== newId) { if (oldId && !isInfiniteAmmo(oldId)) ammoStock[oldId] = (ammoStock[oldId] || 0) + (r[af] || 0); r[af] = 0; }
+  r[wf] = newId;
 }
-function equipWeaponFromWarehouse(whIdx, mi) {
+function equipWeaponFromWarehouse(whIdx, mi, slot = 1) {
   const it = warehouse[whIdx]; if (!it || it.kind !== 'weapon') return;
-  const oldId = roster[mi].weaponId; warehouse.splice(whIdx, 1); setMemberWeapon(mi, it.id);
-  if (!isInfiniteAmmo(oldId)) warehouse.push({ kind: 'weapon', id: oldId });   // 底線武器換下即消失
+  const oldId = roster[mi][WF(slot)]; warehouse.splice(whIdx, 1); setMemberWeapon(mi, it.id, slot);
+  if (oldId && !isInfiniteAmmo(oldId)) warehouse.push({ kind: 'weapon', id: oldId });   // 底線武器換下即消失
   restSel = null;
 }
-function unequipWeapon(mi) { const oldId = roster[mi].weaponId; if (isInfiniteAmmo(oldId)) return; setMemberWeapon(mi, FLOOR_WEAPON); warehouse.push({ kind: 'weapon', id: oldId }); }
+function unequipWeapon(mi, slot = 1) { const oldId = roster[mi][WF(slot)]; setMemberWeapon(mi, FLOOR_WEAPON, slot); if (oldId && !isInfiniteAmmo(oldId)) warehouse.push({ kind: 'weapon', id: oldId }); }   // 卸下→回倉、該槽回底線 pistol
 function equipAbilityFromWarehouse(whIdx, mi) {
   const it = warehouse[whIdx]; if (!it || it.kind !== 'ability') return;
   const oldId = roster[mi].abilityId; warehouse.splice(whIdx, 1); roster[mi].abilityId = it.id;
@@ -1465,11 +1468,11 @@ function equipGearFromWarehouse(whIdx, mi, kind, field) {
 }
 function unequipGear(mi, kind, field) { const oldId = roster[mi][field]; if (!oldId) return; roster[mi][field] = null; warehouse.push({ kind, id: oldId }); }
 function discardWarehouse(whIdx) { if (whIdx >= 0 && whIdx < warehouse.length) warehouse.splice(whIdx, 1); restSel = null; }
-function allocAmmo(mi, dir) {
-  const r = roster[mi]; if (isInfiniteAmmo(r.weaponId)) return;
-  const type = r.weaponId, step = WEAPONS[type].magazine;
-  if (dir > 0) { const take = Math.min(step, ammoStock[type] || 0); r.allocatedAmmo = (r.allocatedAmmo || 0) + take; ammoStock[type] -= take; }
-  else { const give = Math.min(step, r.allocatedAmmo || 0); r.allocatedAmmo -= give; ammoStock[type] = (ammoStock[type] || 0) + give; }
+function allocAmmo(mi, dir, slot = 1) {
+  const r = roster[mi], wf = WF(slot), af = AF(slot), type = r[wf]; if (!type || isInfiniteAmmo(type)) return;
+  const step = WEAPONS[type].magazine;
+  if (dir > 0) { const take = Math.min(step, ammoStock[type] || 0); r[af] = (r[af] || 0) + take; ammoStock[type] -= take; }
+  else { const give = Math.min(step, r[af] || 0); r[af] -= give; ammoStock[type] = (ammoStock[type] || 0) + give; }
 }
 
 /* =====================================================================
@@ -3232,13 +3235,20 @@ function drawLoadoutCard(mi, x, y, w, h) {
       if (canUnequip) uiButton(x + w - 44, yt + 1, 36, 17, '▸倉', unequipFn, { font: '10px Consolas' });
     }
   };
-  // 武器
+  // 武器（主/副 雙槽：點 主/副 切換要編輯的槽；裝備/卸下/彈藥皆對該槽）
+  const wslot = restWslot[mi] || 1;
+  const slotWid = wslot === 2 ? r.weaponId2 : r.weaponId, slotW = slotWid ? WEAPONS[slotWid] : null;
   if (manage && sel && sel.kind === 'weapon') { ctx.fillStyle = 'rgba(95,208,107,0.12)'; ctx.fillRect(x + 4, y + 44, w - 8, 20); }
-  ctx.beginPath(); ctx.fillStyle = rarityColor(W.rarity); ctx.arc(x + pad + 3, y + 54, 3.5, 0, Math.PI * 2); ctx.fill();
-  ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0'; ctx.fillText(`${W.name} 重${W.weight}`, x + pad + 11, y + 58);
+  ctx.textAlign = 'left'; ctx.font = 'bold 10px Consolas';
+  ctx.fillStyle = wslot === 1 ? '#bfe6ff' : '#5a6470'; ctx.fillText('主', x + pad, y + 58);
+  ctx.fillStyle = wslot === 2 ? '#bfe6ff' : '#5a6470'; ctx.fillText('副', x + pad + 16, y + 58);
+  ctx.beginPath(); ctx.fillStyle = slotW ? rarityColor(slotW.rarity) : '#555'; ctx.arc(x + pad + 36, y + 54, 3.5, 0, Math.PI * 2); ctx.fill();
+  ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0'; ctx.fillText(slotW ? `${slotW.name} 重${slotW.weight}` : '無', x + pad + 44, y + 58);
   if (manage) {
-    if (sel && sel.kind === 'weapon') pushRect(x + 4, y + 44, w - 50, 20, () => equipWeaponFromWarehouse(restSel.idx, mi));
-    if (!isInfiniteAmmo(r.weaponId)) uiButton(x + w - 44, y + 45, 36, 17, '▸倉', () => unequipWeapon(mi), { font: '10px Consolas' });
+    pushRect(x + pad - 2, y + 46, 14, 16, () => { restWslot[mi] = 1; });   // 點「主」
+    pushRect(x + pad + 14, y + 46, 14, 16, () => { restWslot[mi] = 2; });  // 點「副」
+    if (sel && sel.kind === 'weapon') pushRect(x + 32, y + 44, w - 78, 20, () => equipWeaponFromWarehouse(restSel.idx, mi, wslot));
+    if (slotWid && !isInfiniteAmmo(slotWid)) uiButton(x + w - 44, y + 45, 36, 17, '▸倉', () => unequipWeapon(mi, wslot), { font: '10px Consolas' });
   }
   row(y + 66, 20, 'rgba(192,160,255,0.14)', `SK ${r.abilityId ? ABILITIES[r.abilityId].name : '—'}`, manage && sel && sel.kind === 'ability',
     () => equipAbilityFromWarehouse(restSel.idx, mi), () => unequipAbility(mi), !!r.abilityId);
@@ -3246,15 +3256,16 @@ function drawLoadoutCard(mi, x, y, w, h) {
     () => equipGearFromWarehouse(restSel.idx, mi, 'equip', 'equipId'), () => unequipGear(mi, 'equip', 'equipId'), !!r.equipId);
   row(y + 110, 20, 'rgba(255,210,125,0.16)', `Q ${r.itemId ? ITEMS[r.itemId].name : '—'}`, manage && sel && sel.kind === 'item',
     () => equipGearFromWarehouse(restSel.idx, mi, 'item', 'itemId'), () => unequipGear(mi, 'item', 'itemId'), !!r.itemId);
-  // 彈藥分配（pistol 無限）
+  // 彈藥分配（對目前編輯的武器槽；無限武器顯示 ∞）
   ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0';
-  if (isInfiniteAmmo(r.weaponId)) {
-    ctx.fillText('彈 ∞（底線武器）', x + pad, y + 148);
+  const aAmmo = wslot === 2 ? (r.allocatedAmmo2 || 0) : (r.allocatedAmmo || 0);
+  if (!slotWid || isInfiniteAmmo(slotWid)) {
+    ctx.fillText(`彈 ∞（${wslot === 2 ? '副' : '主'}・${slotWid ? '底線/近戰' : '無'}）`, x + pad, y + 148);
   } else {
-    ctx.fillText(`彈 ${r.allocatedAmmo}  儲備 ${ammoStock[r.weaponId] | 0}`, x + pad, y + 148);
+    ctx.fillText(`彈 ${aAmmo}  儲備 ${ammoStock[slotWid] | 0}（${wslot === 2 ? '副' : '主'}）`, x + pad, y + 148);
     if (manage) {
-      uiButton(x + w - 76, y + 136, 22, 17, '−', () => allocAmmo(mi, -1), { font: 'bold 13px Consolas', enabled: r.allocatedAmmo > 0 });
-      uiButton(x + w - 30, y + 136, 22, 17, '+', () => allocAmmo(mi, +1), { font: 'bold 13px Consolas', enabled: (ammoStock[r.weaponId] | 0) > 0 });
+      uiButton(x + w - 76, y + 136, 22, 17, '−', () => allocAmmo(mi, -1, wslot), { font: 'bold 13px Consolas', enabled: aAmmo > 0 });
+      uiButton(x + w - 30, y + 136, 22, 17, '+', () => allocAmmo(mi, +1, wslot), { font: 'bold 13px Consolas', enabled: (ammoStock[slotWid] | 0) > 0 });
     }
   }
   // TARGET 階段：整卡＝指派目標
@@ -3952,19 +3963,20 @@ let sandboxCfg = null;          // 上次設定（記憶 + localStorage）
 let sandboxLast = null;         // 上一場結果（撤離/陣亡）顯示用
 let sandboxEl = null, sandboxMembersEl = null, sandboxMapText = null, sandboxMapSel = null, sandboxMsgEl = null, sandboxResultEl = null, sandboxRows = [];
 
-const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', abilityId: 'heal', equipId: '' });
-const randomMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: rngPick(SANDBOX_WEAPON_IDS), abilityId: rngPick(ABILITY_IDS), equipId: rngPick(['', ...EQUIP_IDS]) });
+const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', weaponId2: 'pistol', abilityId: 'heal', equipId: '' });
+const randomMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: rngPick(SANDBOX_WEAPON_IDS), weaponId2: rngPick(['pistol', 'knife', 'pistol', ...SANDBOX_WEAPON_IDS]), abilityId: rngPick(ABILITY_IDS), equipId: rngPick(['', ...EQUIP_IDS]) });
 function makeSandboxMember(m, used) {
   const r = makeRecruit(used);
   if (m.archetypeId && ARCHETYPES[m.archetypeId]) r.archetypeId = m.archetypeId;
   if (m.weaponId && WEAPONS[m.weaponId]) r.weaponId = m.weaponId;
+  r.weaponId2 = (m.weaponId2 && WEAPONS[m.weaponId2]) ? m.weaponId2 : FLOOR_WEAPON;   // 副武器（預設 pistol）
   if (m.abilityId && ABILITIES[m.abilityId]) r.abilityId = m.abilityId;
   r.equipId = (m.equipId && EQUIPMENT[m.equipId]) ? m.equipId : null;
   return r;
 }
 function loadSandboxCfg() { try { return JSON.parse(localStorage.getItem(SANDBOX_STORE_KEY) || 'null'); } catch (e) { return null; } }
 function saveSandboxCfg() {
-  const cfg = { members: sandboxRows.map(r => ({ archetypeId: r.archetype.value, weaponId: r.weapon.value, abilityId: r.ability.value, equipId: r.equip.value })), map: (sandboxMapText ? sandboxMapText.value : '').trim(), mapSel: sandboxMapSel ? sandboxMapSel.value : 'alpha' };
+  const cfg = { members: sandboxRows.map(r => ({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value })), map: (sandboxMapText ? sandboxMapText.value : '').trim(), mapSel: sandboxMapSel ? sandboxMapSel.value : 'alpha' };
   sandboxCfg = cfg; try { localStorage.setItem(SANDBOX_STORE_KEY, JSON.stringify(cfg)); } catch (e) {}
 }
 function sandboxMsg(t) { if (sandboxMsgEl) sandboxMsgEl.textContent = t || ''; }
@@ -4015,7 +4027,7 @@ function sandboxStart() {
   if (!mapObj || typeof mapObj !== 'object') { sandboxMsg('地圖無效'); return; }
   MAPS.__sandbox = normalizeForPlay(mapObj);
   const used = new Set();
-  roster = sandboxRows.map(r => makeSandboxMember({ archetypeId: r.archetype.value, weaponId: r.weapon.value, abilityId: r.ability.value, equipId: r.equip.value || null }, used));
+  roster = sandboxRows.map(r => makeSandboxMember({ archetypeId: r.archetype.value, weaponId: r.weapon.value, weaponId2: r.weapon2.value, abilityId: r.ability.value, equipId: r.equip.value || null }, used));
   missionIndex = 0; roadCurrent = null; introActive = false; cutscene = null; introGuards = []; introConsole = null;
   forcedMap = '__sandbox'; fromSandbox = true; saveSandboxCfg();
   if (sandboxEl) sandboxEl.classList.remove('open');
@@ -4035,12 +4047,13 @@ function addMemberRow(m) {
   const idx = document.createElement('span'); idx.className = 'idx'; row.appendChild(idx);
   const a = sbSelect(ARCHETYPE_IDS, m.archetypeId, id => ARCHETYPES[id].name);
   const w = sbSelect(SANDBOX_WEAPON_IDS, m.weaponId, id => WEAPONS[id].name);
+  const w2 = sbSelect(SANDBOX_WEAPON_IDS, m.weaponId2 || 'pistol', id => WEAPONS[id].name);
   const k = sbSelect(ABILITY_IDS, m.abilityId, id => ABILITIES[id].name);
   const e = sbSelect(EQUIP_IDS, m.equipId || '', id => EQUIPMENT[id].name, '(無裝備)');
   const del = document.createElement('button'); del.className = 'x'; del.textContent = '✕';
-  const rec = { archetype: a, weapon: w, ability: k, equip: e, row };
+  const rec = { archetype: a, weapon: w, weapon2: w2, ability: k, equip: e, row };
   del.addEventListener('click', () => { const i = sandboxRows.indexOf(rec); if (i >= 0) sandboxRows.splice(i, 1); row.remove(); renumberMembers(); });
-  row.appendChild(a); row.appendChild(w); row.appendChild(k); row.appendChild(e); row.appendChild(del);
+  row.appendChild(a); row.appendChild(w); row.appendChild(w2); row.appendChild(k); row.appendChild(e); row.appendChild(del);
   sandboxMembersEl.appendChild(row); sandboxRows.push(rec); renumberMembers();
 }
 function renumberMembers() { sandboxRows.forEach((r, i) => { const idx = r.row.querySelector('.idx'); if (idx) idx.textContent = '#' + (i + 1); }); }
@@ -4072,7 +4085,7 @@ function initSandboxUI() {
     sandboxResultEl = document.createElement('div'); sandboxResultEl.id = 'sbResult'; sandboxResultEl.style.margin = '4px 0'; card.appendChild(sandboxResultEl);
 
     const h3a = document.createElement('h3'); h3a.textContent = '小隊'; card.appendChild(h3a);
-    const cols = document.createElement('div'); cols.className = 'cols'; ['　', '個性', '武器', '技能', '裝備', '　'].forEach(t => { const s = document.createElement('span'); s.textContent = t; cols.appendChild(s); }); card.appendChild(cols);
+    const cols = document.createElement('div'); cols.className = 'cols'; ['　', '個性', '主武器', '副武器', '技能', '裝備', '　'].forEach(t => { const s = document.createElement('span'); s.textContent = t; cols.appendChild(s); }); card.appendChild(cols);
     sandboxMembersEl = document.createElement('div'); card.appendChild(sandboxMembersEl);
     const r1 = document.createElement('div'); r1.className = 'row';
     const addBtn = document.createElement('button'); addBtn.textContent = '＋ 新增隊員'; addBtn.addEventListener('click', () => addMemberRow());
