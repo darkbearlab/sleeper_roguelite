@@ -140,7 +140,7 @@ const CONFIG = {
   //   knownGrace＝失去視線後仍視為「已知」的緩衝秒（避免一閃就重置）。修「交戰後視野穿牆、永遠找得到你」。
   hunt: { searchHops: 3, knownGrace: 0.5, threatGrace: 4, threatShareRadius: 240, threatDist: 320 },   // 被擊中來向脅威：記憶秒數 / 近隣傳播半徑 / 沿來向放置脅威點的距離
   // 打擊感（juice）：子彈近 hitscan(速度×mul)＋曳光、開火後座/相機踢、命中/擊殺螢幕震動、擊殺頓幀。皆可即時調。
-  juice: { bulletSpeedMul: 4, tracer: 1.0, recoil: 4, recoilDecay: 60, camKick: 0, shakeFire: 0, shakeHit: 0, shakeKill: 0, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.04,   // 震動先全關(camKick/shakeFire/Hit/Kill=0)、頓幀減半
+  juice: { bulletSpeedMul: 4, tracer: 1.0, bulletAlpha: 0.16, tracerEvery: 5, recoil: 4, recoilDecay: 60, camKick: 0, shakeFire: 0, shakeHit: 0, shakeKill: 0, shakeMax: 12, shakeDecay: 16, hitstopKill: 0.04,   // 一般彈＝極細淡線(bulletAlpha,0＝隱形)；曳光彈＝火光色、每 tracerEvery 發一發(現實 4:1≈第5發)、只有 W.tracer 的槍有
     hitFlash: 0.12, flinch: 5,                                              // 受擊：閃白時長 / 後仰位移(px)
     deathHitstop: 0.06 },   // 我方陣亡：只保留短頓幀「頓一下」（已取消死亡鏡頭＝相機不轉去死亡點，激戰中不干擾操作）
   // 視覺化聲音：控制角色「視線外」方向有聲音時，畫面邊框朝該方向發光（無音效的替代提示；arcade 亦沿用）。
@@ -205,7 +205,7 @@ const SPECIAL_TAGS = ['flank', 'vantage', 'choke'];
 // pellets：單次擊發的彈丸數（霰彈）；burst：點放節奏 { size 連發數, gap 連發後停頓秒 }（重機槍）。
 const WEAPONS = {
   // pistol＝底線武器（§7）：弱、永遠有、彈藥無限（不納入分配/儲備）
-  pistol:{ name: 'Pistol',rarity: 'common',   weight: 0.5, damage: 10, fireRate: 6,  range: 280, projSpeed: 680, spreadBase: 2.5, spreadPerShot: 2.0, spreadMax: 12, spreadRecover: 10, magazine: 12, reloadTime: 1.1, turnSpeed: 600, pierce: 0 },
+  pistol:{ name: 'Pistol',rarity: 'common',   weight: 0.5, damage: 10, fireRate: 6,  range: 1500, projSpeed: 680, spreadBase: 2.5, spreadPerShot: 2.0, spreadMax: 12, spreadRecover: 10, magazine: 12, reloadTime: 1.1, turnSpeed: 600, pierce: 0 },
   smg:   { name: 'SMG',   rarity: 'common',   weight: 0.9, damage: 13, fireRate: 12, range: 1500, projSpeed: 740, spreadBase: 3.2, spreadPerShot: 2.6, spreadMax: 16, spreadRecover: 11, magazine: 35, reloadTime: 1.3, turnSpeed: 560, pierce: 0 },
   pdw:   { name: 'PDW',   rarity: 'uncommon', weight: 1.2, damage: 16, fireRate: 9,  range: 1500, projSpeed: 780, spreadBase: 2.2, spreadPerShot: 2.2, spreadMax: 13, spreadRecover: 9,  magazine: 40, reloadTime: 1.5, turnSpeed: 520, pierce: 0 },
   rifle: { name: 'Rifle', rarity: 'common',   weight: 1.8, damage: 22, fireRate: 7,  range: 1500, projSpeed: 840, spreadBase: 1.4, spreadPerShot: 1.8, spreadMax: 10, spreadRecover: 8,  magazine: 30, reloadTime: 1.8, turnSpeed: 440, pierce: 0.5 },
@@ -213,18 +213,18 @@ const WEAPONS = {
   carbine:{ name:'Carbine',rarity:'common',   weight: 1.3, damage: 9,  fireRate: 3,  range: 1500, projSpeed: 640, spreadBase: 3,   spreadPerShot: 1.8, spreadMax: 14, spreadRecover: 8,  magazine: 30, reloadTime: 2.0, turnSpeed: 360, pierce: 0 },
   dmr:   { name: 'DMR',   rarity: 'rare',     weight: 2.0, damage: 34, fireRate: 3.5,range: 1600, projSpeed: 980, spreadBase: 1.0, spreadPerShot: 1.4, spreadMax: 8,  spreadRecover: 7,  magazine: 15, reloadTime: 2.0, turnSpeed: 400, pierce: 0.9 },
   // silpistol＝消音手槍（潛行）：silent＝不發槍聲(不驚動)；高單發(繞背×2 可一槍斃 70hp)、短程、彈藥＝有限亞音速彈
-  silpistol:{ name:'Silenced Pistol',rarity:'uncommon', weight: 0.6, damage: 40, fireRate: 2, range: 220, projSpeed: 700, spreadBase: 1.2, spreadPerShot: 1.0, spreadMax: 6, spreadRecover: 9, magazine: 6, reloadTime: 1.4, turnSpeed: 560, pierce: 0, silent: true },
+  silpistol:{ name:'Silenced Pistol',rarity:'uncommon', weight: 0.6, damage: 40, fireRate: 2, range: 900, projSpeed: 700, spreadBase: 1.2, spreadPerShot: 1.0, spreadMax: 6, spreadRecover: 9, magazine: 6, reloadTime: 1.4, turnSpeed: 560, pierce: 0, silent: true },
   // knife＝近戰小刀：攻速同手槍、射程極短(貼臉)、重量可忽略、高威力高穿甲；melee＝彈藥無限不換彈、極佳副武器(解甲)
   knife: { name: 'Knife', rarity: 'common', weight: 0.1, damage: 45, fireRate: 6, range: 42, projSpeed: 700, spreadBase: 1, spreadPerShot: 0, spreadMax: 2, spreadRecover: 20, magazine: 999, reloadTime: 0.1, turnSpeed: 640, pierce: 0.9, melee: true },
   // 局外解鎖武器（情報點；解鎖後才進招募/loot 池，仍 RNG 取得）
   ar:      { name: 'Assault Rifle', rarity: 'uncommon', weight: 1.6, damage: 18, fireRate: 9, range: 1500, projSpeed: 820, spreadBase: 1.8, spreadPerShot: 1.8, spreadMax: 12, spreadRecover: 9, magazine: 30, reloadTime: 1.7, turnSpeed: 460, pierce: 0.6 },   // 穩定中距、過半穿甲
-  revolver:{ name: 'Revolver',      rarity: 'uncommon', weight: 0.7, damage: 30, fireRate: 3, range: 340,  projSpeed: 760, spreadBase: 1.6, spreadPerShot: 1.2, spreadMax: 8,  spreadRecover: 9, magazine: 6,  reloadTime: 1.6, turnSpeed: 540, pierce: 0.7 },   // 副武器級、單發高穿甲
+  revolver:{ name: 'Revolver',      rarity: 'uncommon', weight: 0.7, damage: 30, fireRate: 3, range: 1500,  projSpeed: 760, spreadBase: 1.6, spreadPerShot: 1.2, spreadMax: 8,  spreadRecover: 9, magazine: 6,  reloadTime: 1.6, turnSpeed: 540, pierce: 0.7 },   // 副武器級、單發高穿甲
   // 最終解鎖（通過真相挑戰）：致敬 The Patriot＝子彈無限的步槍，但「槍聲全場聽得見」＝代價＝無法潛行
-  siren:   { name: 'Siren',         rarity: 'legendary', weight: 1.4, damage: 20, fireRate: 11, range: 1600, projSpeed: 860, spreadBase: 1.6, spreadPerShot: 1.4, spreadMax: 10, spreadRecover: 11, magazine: 60, reloadTime: 1.4, turnSpeed: 500, pierce: 0.7, infinite: true, loud: true },
+  siren:   { name: 'Siren',         rarity: 'legendary', weight: 1.4, damage: 20, fireRate: 11, range: 1600, projSpeed: 860, spreadBase: 1.6, spreadPerShot: 1.4, spreadMax: 10, spreadRecover: 11, magazine: 60, reloadTime: 1.4, turnSpeed: 500, pierce: 0.7, infinite: true, loud: true, tracer: true },
   // --- 敵人專屬武器（不入玩家戰利品池）---
   fangs:  { name:'Fangs',  rarity:'common',   weight: 0,   damage: 7,  fireRate: 8,  range: 34,  projSpeed: 520, spreadBase: 6,   spreadPerShot: 0,   spreadMax: 6,  spreadRecover: 20, magazine: 999, reloadTime: 0.1, turnSpeed: 560, pierce: 0 },                       // 警犬：貼臉短間距連咬（走一般射擊管線）
-  lmg:    { name:'LMG',    rarity:'rare',     weight: 3.0, damage: 11, fireRate: 11, range: 1500, projSpeed: 760, spreadBase: 3.5, spreadPerShot: 1.2, spreadMax: 18, spreadRecover: 6,  magazine: 60,  reloadTime: 3.0, turnSpeed: 260, pierce: 0, burst: { size: 8, gap: 0.7 } },  // 重機槍：點放掃射
-  shotgun:{ name:'Shotgun',rarity:'uncommon', weight: 2.2, damage: 6,  fireRate: 1.4,range: 240, projSpeed: 620, spreadBase: 9,   spreadPerShot: 0,   spreadMax: 9,  spreadRecover: 10, magazine: 6,   reloadTime: 2.2, turnSpeed: 360, pierce: 0, pellets: 7 },                   // 霰彈兵：貼臉多發爆發
+  lmg:    { name:'LMG',    rarity:'rare',     weight: 3.0, damage: 11, fireRate: 11, range: 1500, projSpeed: 760, spreadBase: 3.5, spreadPerShot: 1.2, spreadMax: 18, spreadRecover: 6,  magazine: 60,  reloadTime: 3.0, turnSpeed: 260, pierce: 0, tracer: true, burst: { size: 8, gap: 0.7 } },  // 重機槍：點放掃射、帶曳光彈
+  shotgun:{ name:'Shotgun',rarity:'uncommon', weight: 2.2, damage: 6,  fireRate: 1.4,range: 700, projSpeed: 620, spreadBase: 9,   spreadPerShot: 0,   spreadMax: 9,  spreadRecover: 10, magazine: 6,   reloadTime: 2.2, turnSpeed: 360, pierce: 0, pellets: 7 },                   // 霰彈兵：貼臉多發爆發
 };
 const WEAPON_IDS = Object.keys(WEAPONS);
 const FLOOR_WEAPON = 'pistol';                              // 預設武器底線（§7）
@@ -1917,6 +1917,8 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
   const dmgF = passiveFireDmgMul(u);                          // 被動(衝鋒/伏擊)：開火當下決定
   const isPlayer = u.faction === 'player';
   if (isPlayer) u.regenT = 0;                                 // 開火＝在戰鬥（清戰場急救脫戰計時）
+  u.shotCount = (u.shotCount || 0) + 1;                       // 連射計數（曳光彈每 N 發一發用）
+  const isTracer = !!W.tracer && (u.shotCount % CONFIG.juice.tracerEvery === 0);   // 只有帶曳光的槍、且輪到第 N 發才是曳光彈
   for (let p = 0; p < pellets; p++) {
     const a = angle + (Math.random() * 2 - 1) * spreadDeg * spreadF * Math.PI / 180;
     bullets.push({
@@ -1925,6 +1927,7 @@ function fireUnit(u, angle, spreadDeg, fireRateMult, bloomAdd) {
       dmg: W.damage * dmgF, faction: u.faction, range: W.range, traveled: 0,
       ox: u.pos.x, oy: u.pos.y,   // 發射原點（低矮牆「貼牆可越射」判定用）
       pierce: W.pierce || 0,      // 穿甲：對裝甲敵人的擋格率衰減
+      tracer: isTracer,           // 曳光彈：火光色亮拖尾（否則極細淡線/隱形）
       breacher: hasPassive(u, 'breacher'), suppress: hasPassive(u, 'suppress'), shooterId: isPlayer ? u.id : -1,   // 被動：命中時依距離/壓制套用、擊殺歸屬
     });
   }
@@ -3160,16 +3163,29 @@ function drawZonesWorld() {
   ctx.beginPath(); ctx.arc(ENTRY.x, ENTRY.y, 22, 0, Math.PI * 2); ctx.stroke();
 }
 function drawBullets() {
-  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  ctx.save(); ctx.lineCap = 'round';
+  const alpha = CONFIG.juice.bulletAlpha;
+  // 一般彈：極細淡線、僅提示彈道（不畫亮頭/blob）；alpha=0 則完全隱形
+  if (alpha > 0) {
+    ctx.globalCompositeOperation = 'source-over'; ctx.lineWidth = 1;
+    for (const b of bullets) {
+      if (b.tracer) continue;
+      const l = Math.hypot(b.vx, b.vy) || 1, len = clamp(l * 0.03, 8, 54);
+      const col = b.faction === 'player' ? '185,212,236' : '226,176,150';
+      ctx.strokeStyle = `rgba(${col},${alpha})`;
+      ctx.beginPath(); ctx.moveTo(b.x - b.vx / l * len, b.y - b.vy / l * len); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+  }
+  // 曳光彈：火光色（橙黃）、較長較亮的加色拖尾
+  ctx.globalCompositeOperation = 'lighter'; ctx.lineWidth = 2.4;
   for (const b of bullets) {
-    const l = Math.hypot(b.vx, b.vy) || 1;
-    const len = clamp(l * 0.045 * CONFIG.juice.tracer, 16, 160);            // 曳光長度隨速度
+    if (!b.tracer) continue;
+    const l = Math.hypot(b.vx, b.vy) || 1, len = clamp(l * 0.05 * CONFIG.juice.tracer, 22, 180);
     const tx = b.x - b.vx / l * len, ty = b.y - b.vy / l * len;
-    const col = b.faction === 'player' ? '127,227,255' : '255,150,80';
+    const col = b.faction === 'player' ? '255,190,96' : '255,120,60';   // 火光色（敵偏紅）
     const g = ctx.createLinearGradient(tx, ty, b.x, b.y);
-    g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(1, `rgba(${col},0.9)`);
-    ctx.strokeStyle = g; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(b.x, b.y); ctx.stroke();
-    ctx.fillStyle = `rgba(${col},1)`; ctx.beginPath(); ctx.arc(b.x, b.y, 2.2, 0, Math.PI * 2); ctx.fill();   // 亮頭
+    g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(1, `rgba(${col},0.95)`);
+    ctx.strokeStyle = g; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(b.x, b.y); ctx.stroke();
   }
   ctx.restore();
 }
