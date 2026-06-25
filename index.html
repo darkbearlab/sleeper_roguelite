@@ -1376,20 +1376,29 @@ function enterRest(tutorial = false) {
   ensureFileCarrier();   // 機密檔案：序章後首次進休息＝主角(第一人)背上；之後維持單一攜帶者（可在配裝卡重新指派）
 }
 
-// --- 搜刮：隨機三選一（地板保證至少一個基本補給；天花板可出稀有武器/技能/質升級）---
-function rollScavenge(n) {
-  const supply = () => { const amt = 200; return { type: 'supply', amt, label: `補給 · 全武器類彈藥 +${amt}`, color: '#8fd0ff' }; };
-  const maxhp = () => { const amt = 20; return { type: 'maxhp', amt, label: `療養 · 全隊 +${amt} maxHP`, color: '#7fffa8' }; };
-  const weapon = () => { const id = rollLootWeapon(), W = WEAPONS[id]; return { type: 'weapon', id, label: `武器 · ${W.name}（${W.rarity}）→ 倉庫`, color: rarityColor(W.rarity) }; };
-  const ability = () => { const id = rngPick(LOOT_ABILITY_IDS), A = ABILITIES[id]; return { type: 'ability', id, label: `技能 · ${A.name}（+${A.heal}/CD${A.cooldown}s）→ 倉庫`, color: '#c0a0ff' }; };
-  const equipO = () => { const id = rngPick(LOOT_EQUIP_IDS), E = EQUIPMENT[id]; return { type: 'equip', id, label: `裝備 · ${E.name}（${E.rarity}，持續被動）→ 倉庫`, color: '#9fd0e0' }; };
-  const itemO = () => { const id = rngPick(LOOT_ITEM_IDS), I = ITEMS[id]; return { type: 'item', id, label: `道具 · ${I.name}（一次性）→ 倉庫`, color: '#ffd27d' }; };
-  const gens = [supply, maxhp, weapon, weapon, ability, equipO, itemO];   // 升階/轉職已移到「戰果結算」，休息不再發個性升級
-  const offers = [supply()];                       // 地板保證：基本補給
-  while (offers.length < n) offers.push(rngPick(gens)());
-  return offers;
+// --- 搜刮＝純整補（零風險、無抉擇；風險集中在事件格）---
+// 機制：保底抽 1 類型 + 機率追加類型；每類型抽內容(rarity 加權)，彈藥類型可給複數。純 RNG(之後可改吃種子)。
+const RESUPPLY_CATS = ['ammo', 'ammo', 'ammo', 'weapon', 'weapon', 'equip', 'equip', 'item', 'item', 'ability'];   // 加權袋（彈藥較常見）
+function rollResupply() {
+  const got = [], cats = [rngPick(RESUPPLY_CATS)];
+  if (Math.random() < 0.5) cats.push(rngPick(RESUPPLY_CATS));    // 機率追加第二類
+  if (Math.random() < 0.22) cats.push(rngPick(RESUPPLY_CATS));   // 小機率第三類
+  const seen = {};
+  for (const c of cats) {
+    if (c === 'ammo') {   // 彈藥：1~2 個武器類別各一份備彈（可複數）
+      const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent);
+      const k = 1 + (Math.random() < 0.5 ? 1 : 0);
+      for (let j = 0; j < k; j++) { const id = rngPick(ids), amt = WEAPONS[id].magazine * (2 + Math.floor(Math.random() * 3)); ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }
+    } else if (seen[c]) { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * 2; ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }   // 同類型重抽→改給彈藥(不重複物品)
+    else if (c === 'weapon') { const id = rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); got.push(WEAPONS[id].name); }
+    else if (c === 'equip') { const id = rngPick(LOOT_EQUIP_IDS); warehouse.push({ kind: 'equip', id }); got.push(EQUIPMENT[id].name); }
+    else if (c === 'item') { const id = rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); got.push(ITEMS[id].name); }
+    else if (c === 'ability') { const id = rngPick(LOOT_ABILITY_IDS); warehouse.push({ kind: 'ability', id }); got.push(ABILITIES[id].name); }
+    seen[c] = true;
+  }
+  return got;
 }
-function restDoScavenge() { if (restPhase !== 'CHOICE') return; restOffers = rollScavenge(CONFIG.loadout.scavengeChoices); restPhase = 'OFFERS'; }
+function restDoScavenge() { if (restPhase !== 'CHOICE') return; const got = rollResupply(); restMsg = '整補：' + (got.join('、') || '無'); restPhase = 'DONE'; }
 function pickOffer(i) {
   if (restPhase !== 'OFFERS' || !restOffers || i < 0 || i >= restOffers.length) return;
   const o = restOffers[i]; restPick = o;
@@ -3321,13 +3330,13 @@ function drawRestActionBar() {
   const ay = 596, over = overCap();
   if (restPhase === 'CHOICE') {
     ctx.textAlign = 'center'; ctx.font = '12px Consolas'; ctx.fillStyle = '#8b97a5';
-    ctx.fillText('二選一 — 攤開兩邊地板：「保證補給＋上限賭注」對上「保證 +1 身體（個性隨機）」。可隨時整理倉庫/配裝/分配彈藥。', cv.width / 2, ay - 16);
+    ctx.fillText('二選一 —「隨機整補（純拿資源、零風險）」對上「喚醒 +1 身體（個性隨機）」。可隨時整理倉庫/配裝/分配彈藥。風險與抉擇在事件格。', cv.width / 2, ay - 16);
     uiButton(cv.width / 2 - 320, ay, 300, 64, '', null, { bg: 'rgba(30,52,70,0.9)', border: '#7fe3ff' });
     uiButton(cv.width / 2 + 20, ay, 300, 64, '', null, { bg: over ? 'rgba(34,40,48,0.7)' : 'rgba(30,52,42,0.9)', border: over ? '#566' : '#7fffa8' });
     // 搜刮
-    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText('[1] 搜刮物資', cv.width / 2 - 170, ay + 24);
-    ctx.fillStyle = '#aeb9c5'; ctx.font = '11px Consolas'; ctx.fillText(`三選一 · 地板=基本補給保證`, cv.width / 2 - 170, ay + 42);
-    ctx.fillText('天花板=稀有武器/技能/質升級', cv.width / 2 - 170, ay + 57);
+    ctx.fillStyle = '#7fe3ff'; ctx.font = 'bold 15px Consolas'; ctx.fillText('[1] 搜刮整補', cv.width / 2 - 170, ay + 24);
+    ctx.fillStyle = '#aeb9c5'; ctx.font = '11px Consolas'; ctx.fillText('隨機補給：武器/彈藥/裝備/道具', cv.width / 2 - 170, ay + 42);
+    ctx.fillText('純拿資源、零風險（可能多樣）', cv.width / 2 - 170, ay + 57);
     pushRect(cv.width / 2 - 320, ay, 300, 64, restDoScavenge);
     // 喚醒
     ctx.fillStyle = over ? '#6a727c' : '#7fffa8'; ctx.font = 'bold 15px Consolas'; ctx.fillText('[2] 喚醒 Sleeper', cv.width / 2 + 170, ay + 24);
