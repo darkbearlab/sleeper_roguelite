@@ -2,8 +2,10 @@
 
 俯視戰術射擊 × 附身式小隊操作 × Slay-the-Spire roguelite。**單一檔 `index.html`**（原生 JS + Canvas 2D、零外部相依，瀏覽器開檔即玩）。
 
-## 變體（規劃中、尚未動工）
-- `extraction_arcade/` — 2D「搜打撤」arcade 變體，將由本遊戲**複製分家**獨立維護（非共用引擎）。**目前只有設計文件 `extraction_arcade/設計規劃.md`，尚未動工**；非經使用者明確要求別開工。本目錄與 SLEEPER 主程式無關，改 index.html 時可忽略。
+## 變體
+- `extraction_arcade/` — 2D「搜打撤」arcade 變體，由本遊戲**複製分家**獨立維護（非共用引擎、各自演化）。**MVP 已動工（2026-06-26）**：`extraction_arcade/index.html` 是當時 index.html 的完整複本＋疊上 arcade 層；**改主程式 index.html 不會自動同步到這裡**（要手動帶過去）。設計文件＝`extraction_arcade/設計規劃.md`。
+  - **MVP 內容**：boot 直接進 `enterArcade`（單一玩家「玩家本位」、無路線圖/序章/檔案）；`CONFIG.arcade`(treasureCount/values/hunters/hunterSatisfy/costPerShot/map='alpha')。**寶物** `treasures[]`＝每局吃種子在 waypoints（或 `MAP.treasureSpots`）隨機抽子集＋亂數價值，迷霧之下要搜才看得到（`drawTreasures` 畫在 fog 前）；走過 `updateTreasures` 即撿入 `u.loot`。**獵人**＝各自一勢力(`FACTIONS.hunterA/B…`＝FFA)、`e.hunter`＋隨機 `satisfaction`：`enemyTick` IDLE/失去目標時改走 `hunterIdleTick`＝`lootSeekStep`(認領→bfsPath→撿) → 累積 `loot≥satisfaction` → `hunterExtractStep`(走 EXTRACT 離場、標 `e.extracted`)。環境威脅＝沿用地圖 enemySpawns(住民 grunt 巡邏)＋2 隻野怪(dog,patrols)，faction enemy 敵對所有人。**計分**：`fireUnit` 玩家開火累 `arcadeCost`；撤離→`endMission` 早退到 `arcadeResults`＝`score=撤出寶值−成本`、**陣亡＝所得歸零**；本機排行榜 `arcadeScores`(localStorage `sleeper_arcade_scores_v1`)。scene `ARCADERESULT`(drawArcadeResult＋再來一局/回主選單)、`drawArcadeHUD`。`?menu` 可進母遊戲主選單(沙盒/編輯器)。重用：COMBAT 引擎/附身/AI/extractTick/迷霧/juice/多陣營 hostile。headless 驗證 28/28。
+  - **待續**：陣營敵對矩陣細緻化(現全 FFA)、撤離點伏擊、時間壓力、寶物編輯器工具、slot 背包、附身小隊深度、線上排行榜。改 arcade 別動主程式；改主程式的引擎修正若要進 arcade 需手動同步。
 
 ## 接手前先讀
 - **`開發進度與脈絡.md`** — 現況架構、系統、CONFIG 速查、踩雷（2026-06-24 重整精簡版）。**恢復實質工作前先讀這份，別重新摸索程式碼。**
