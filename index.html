@@ -220,7 +220,7 @@ const WEAPONS = {
   ar:      { name: 'Assault Rifle', rarity: 'uncommon', weight: 1.6, damage: 18, fireRate: 9, range: 1500, projSpeed: 820, spreadBase: 1.8, spreadPerShot: 1.8, spreadMax: 12, spreadRecover: 9, magazine: 30, reloadTime: 1.7, turnSpeed: 460, pierce: 0.6 },   // 穩定中距、過半穿甲
   revolver:{ name: 'Revolver',      rarity: 'uncommon', weight: 0.7, damage: 30, fireRate: 3, range: 1500,  projSpeed: 760, spreadBase: 1.6, spreadPerShot: 1.2, spreadMax: 8,  spreadRecover: 9, magazine: 6,  reloadTime: 1.6, turnSpeed: 540, pierce: 0.7 },   // 副武器級、單發高穿甲
   // 最終解鎖（通過真相挑戰）：致敬 The Patriot＝子彈無限的步槍，但「槍聲全場聽得見」＝代價＝無法潛行
-  siren:   { name: 'Siren',         rarity: 'legendary', weight: 1.4, damage: 20, fireRate: 11, range: 1600, projSpeed: 860, spreadBase: 1.6, spreadPerShot: 1.4, spreadMax: 10, spreadRecover: 11, magazine: 60, reloadTime: 1.4, turnSpeed: 500, pierce: 0.7, infinite: true, loud: true, tracer: true },
+  siren:   { name: 'Siren',         rarity: 'legendary', weight: 1.4, damage: 20, fireRate: 11, range: 1600, projSpeed: 860, spreadBase: 1.6, spreadPerShot: 1.4, spreadMax: 10, spreadRecover: 11, magazine: 60, reloadTime: 1.4, turnSpeed: 500, pierce: 0.7, infinite: true, loud: true, tracer: true, noRandom: true },   // noRandom＝永不進任何武器抽選名單（只由 finale 解鎖＋grantStartingGear 取得）
   // --- 敵人專屬武器（不入玩家戰利品池）---
   fangs:  { name:'Fangs',  rarity:'common',   weight: 0,   damage: 7,  fireRate: 8,  range: 34,  projSpeed: 520, spreadBase: 6,   spreadPerShot: 0,   spreadMax: 6,  spreadRecover: 20, magazine: 999, reloadTime: 0.1, turnSpeed: 560, pierce: 0 },                       // 警犬：貼臉短間距連咬（走一般射擊管線）
   lmg:    { name:'LMG',    rarity:'rare',     weight: 3.0, damage: 11, fireRate: 11, range: 1500, projSpeed: 760, spreadBase: 3.5, spreadPerShot: 1.2, spreadMax: 18, spreadRecover: 6,  magazine: 60,  reloadTime: 3.0, turnSpeed: 260, pierce: 0, tracer: true, burst: { size: 8, gap: 0.7 } },  // 重機槍：點放掃射、帶曳光彈
@@ -229,7 +229,8 @@ const WEAPONS = {
 const WEAPON_IDS = Object.keys(WEAPONS);
 const FLOOR_WEAPON = 'pistol';                              // 預設武器底線（§7）
 const RECRUIT_WEAPON_IDS = ['smg', 'pdw', 'rifle', 'ar'];        // 隨機招募池（ar 需局外解鎖才進池）
-const LOOT_WEAPON_IDS = ['smg', 'pdw', 'rifle', 'carbine', 'dmr', 'silpistol', 'knife', 'ar', 'revolver']; // 搜刮戰利品池（ar/revolver 需解鎖）
+const LOOT_WEAPON_IDS = ['smg', 'pdw', 'rifle', 'carbine', 'dmr', 'silpistol', 'knife', 'ar', 'revolver']; // 搜刮戰利品池（ar/revolver 需解鎖；Siren 永不在內）
+const randomWeaponPool = (ids) => ids.filter(id => !(WEAPONS[id] && WEAPONS[id].noRandom));   // 抽選用：濾掉 noRandom(Siren)＝任何武器隨機抽選都不會抽到（手動選仍可）
 const isInfiniteAmmo = (id) => id === FLOOR_WEAPON || !!(WEAPONS[id] && (WEAPONS[id].melee || WEAPONS[id].infinite));   // 底線武器/近戰/infinite(Siren)＝彈藥無限不耗備彈
 // 雙武器換槍：抽出時間＝base + 抽出武器 weight × perWeight（越重抽越慢；換槍期間不能開火）。面板可調。
 CONFIG.weaponSwap = { base: 0.35, perWeight: 0.18 };
@@ -947,6 +948,58 @@ const MAPS = {
     ],
     prisoners: [],
   },
+  // vault：金庫（密封容器驗證關）。雙開關(守備房A/B)→雙層門(airlock)→金庫內密封容器；撿走撤離才開封。
+  vault: {
+    label: '金庫', category: 'facility', roles: ['normal'], eventMap: true,
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 }, { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 }, { x1: 40, y1: 680, x2: 40, y2: 40 },
+      // 金庫室 (x960-1160, y280-440)：左側留內門缺口 y330-390
+      { x1: 960, y1: 280, x2: 1160, y2: 280 }, { x1: 1160, y1: 280, x2: 1160, y2: 440 }, { x1: 960, y1: 440, x2: 1160, y2: 440 },
+      { x1: 960, y1: 280, x2: 960, y2: 330 }, { x1: 960, y1: 390, x2: 960, y2: 440 },
+      // 氣密走廊 airlock (x780-960, y330-390)
+      { x1: 780, y1: 330, x2: 960, y2: 330 }, { x1: 780, y1: 390, x2: 960, y2: 390 },
+      // 守備房分隔（room A 上、room B 下）
+      { x1: 560, y1: 40, x2: 560, y2: 230 }, { x1: 560, y1: 490, x2: 560, y2: 680 },
+    ],
+    doors: [
+      { id: 'do', x1: 780, y1: 330, x2: 780, y2: 390, open: false },   // 外門（airlock 入口）＝開關A 開
+      { id: 'di', x1: 960, y1: 330, x2: 960, y2: 390, open: false },   // 內門（airlock→金庫）＝開關B 開
+    ],
+    lowWalls: [
+      { x1: 650, y1: 300, x2: 650, y2: 420 },   // 中央掩體（金庫入口前）
+    ],
+    buttons: [
+      { id: 'bA', x: 300, y: 150, doorId: 'do' },   // 守備房A：開外門
+      { id: 'bB', x: 300, y: 560, doorId: 'di' },   // 守備房B：開內門
+    ],
+    bushes: [], destructibles: [], areas: [],
+    waypoints: [
+      { id: 0, pos: { x: 160, y: 360 }, tags: ['spawn'] },     // 入口
+      { id: 1, pos: { x: 300, y: 150 }, tags: ['vantage'] },   // 守備房A（開關A）
+      { id: 2, pos: { x: 300, y: 560 }, tags: ['vantage'] },   // 守備房B（開關B）
+      { id: 3, pos: { x: 450, y: 360 }, tags: ['choke'] },     // 中央
+      { id: 4, pos: { x: 680, y: 360 }, tags: ['cover'] },     // 金庫入口前
+      { id: 5, pos: { x: 870, y: 360 }, tags: ['choke'] },     // airlock 內（兩門之間）
+      { id: 6, pos: { x: 1080, y: 360 }, tags: ['vantage'] },  // 金庫內（容器）
+      { id: 7, pos: { x: 160, y: 150 }, tags: ['patrol'] },
+      { id: 8, pos: { x: 160, y: 560 }, tags: ['patrol'] },
+      { id: 9, pos: { x: 680, y: 560 }, tags: ['patrol'] },    // 下方（往撤離）
+      { id: 10, pos: { x: 1080, y: 560 }, tags: ['patrol'] },  // 撤離側
+    ],
+    edges: [
+      [0, 3], [0, 7], [0, 8], [7, 1], [1, 3], [8, 2], [2, 3], [3, 4], [4, 5], [5, 6], [4, 9], [9, 10], [8, 9],
+    ],
+    entryPoints: [{ x: 110, y: 360 }],
+    extractionPoints: [{ x: 1150, y: 620 }],
+    enemySpawns: [
+      { nodeId: 1, type: 'grunt', facing: 0 }, { nodeId: 1, type: 'grunt_flank' },        // 守備房A
+      { nodeId: 2, type: 'grunt', facing: 0 }, { nodeId: 2, type: 'heavy_shot' },          // 守備房B
+      { nodeId: 4, type: 'heavy_lmg', facing: Math.PI },                                   // 金庫入口前守衛
+    ],
+    caches: [{ x: 1080, y: 360 }],   // ★密封容器：金庫內、雙層門後
+    prisoners: [],
+  },
   // intro：第0關（序章/教學）。管制室(左) → 控制台 → 出口門(x900) → 守衛廊道 → 撤離(右)。
   // 主角/同僚/守衛由 startIntro 以腳本放置，非 enemySpawns；timeBudget 由 startIntro 設超大（無追兵）。
   intro: {
@@ -1287,6 +1340,7 @@ let backpack = [];           // 臨時背包：任務中撿到、待休息關處
 let ammoStock = {};          // 共用彈藥儲備 {weaponId: number}（按武器類別）
 let drops = [];              // 戰鬥中地上的掉落物 [{pos, kind:'weapon', id, ammo}]
 let fileDrop = null;         // 機密檔案掉在地上時的位置 {x,y}（攜帶者陣亡→掉落，任一我方走過即拾起；穿迷霧永遠可見）
+let cacheGround = [];        // 地上的密封容器 [{x,y}]（任務配置/運搬者陣亡掉落；任一我方走過即拾起，比照機密檔案；撤離才開封）
 let loseReason = '';         // RUN FAILED 原因：'全滅' | '機密檔案遺失'
 let corpses = [];            // 陣亡標記 [{x,y,enemy}]（地上叉叉，整場保留）
 let decals = [];             // 地上血漬/痕跡 [{x,y,r,col}]（上限淘汰、整場保留）
@@ -1357,6 +1411,7 @@ function makePlayer(i, cfg, pos) {
     buffT: 0, buffMove: 1, buffFire: 1,    // 道具（腎上腺素）短時 buff
     passBuffT: 0, passBuffMove: 1, passBuffFire: 1, stillT: 0, momentumT: 0, regenT: 0, suppressedT: 0,   // 被動時間態
     hasFile: !!cfg.carriesFile,            // 是否身上帶著機密檔案（獨立攜帶格，跨關隨撤出者）
+    caches: 0,                             // 運搬中的密封容器數（每場撿取，撤離開封；不跨關）
     senseRadius: CONFIG.vision.senseRadius * (cfg.strength || 1) * (fx.senseMul || 1) * pSense,
     fireCooldown: 0, engageTimer: 0, alertTimer: 0, muzzle: 0, sprinting: false,
     idleAnchor: 0, sweepPhase: 0, sweepDir: 1, extractNode: null,   // idleAnchor＝進入閒置時的正前方
@@ -1473,6 +1528,8 @@ function startMission() {
   controlledId = 0;
   enemies = []; bullets = []; grenades = []; smokes = []; flashFx = []; particles = []; corpses = []; decals = []; soundPings = []; shakeAmt = 0; kickY = 0; hitstopT = 0;
   reservations = new Map(); patrolClaims = new Map(); enemyIdSeq = 1; drops = []; fileDrop = null;
+  cacheGround = (MAP.caches || []).map(c => ({ x: c.x, y: c.y }));   // 密封容器：本場地圖配置的（撿走撤離才開封）
+  for (const p of players) p.caches = 0;
   if (!fromSandbox && !fromEditor && !finaleActive) {   // 機密檔案：本場由 roster 指定的攜帶者背上（保底＝沒人標記就給第一人，檔案不能憑空消失）
     if (!players.some(p => p.hasFile) && players.length) players[0].hasFile = true;
   } else { for (const p of players) p.hasFile = false; }   // 沙盒/編輯試玩/最終挑戰不啟用檔案機制（最終＝撤出≥1 即勝）
@@ -1496,8 +1553,10 @@ function endMission() {
   if (introActive) { finishIntro(); return; }   // 第0關：撤離 → 序章休息（含教學），不走一般結算
   const survivors = players.filter(p => p.state === 'EXTRACTED');
   const fileSafe = survivors.some(p => p.hasFile);   // 機密檔案必須由「撤出成功」的人帶出，否則整局失敗（躺地上/隨陣亡者沒了都算遺失）
-  lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe };
   const win = survivors.length >= 1 && (finaleActive || fileSafe);   // 最終挑戰不啟用檔案機制＝撤出≥1 即過關（繼續跑路線）
+  const cacheReveal = [];   // 密封容器開封＝事後抽選（排除基本階、含未解鎖、run 限定進倉庫）：僅過關時開
+  if (win) { const cachesOut = survivors.reduce((n, p) => n + (p.caches || 0), 0); for (let i = 0; i < cachesOut; i++) cacheReveal.push(rollMysteryLoot()); }
+  lastSummary = { mission: missionIndex + 1, extracted: survivors.map(p => p.name), dead: players.filter(p => p.state === 'DEAD').map(p => p.name), fileSafe, cacheReveal };
   if (win) { roster = survivors.map(rosterFromPlayer); missionIndex++; enterSettle(); return; }   // 勝利→戰果結算(挑人升階)→路線圖
   if (finaleActive) { resolveFinale(false); return; }   // 最終挑戰全滅＝Bad End（不走一般 RUNEND）
   scene = 'RUNEND'; result = 'LOSE'; loseReason = survivors.length === 0 ? '全滅' : '機密檔案遺失'; metaOnRunEnd(false); releasePointer();   // 一般 run 失敗：局外結算
@@ -1568,6 +1627,11 @@ const EVENTS = [
     choices: [
       { label: '趁亂穿過', hint: '進場：駐軍 vs 暴民混戰中繞行撤離（兩派都與你為敵，但會先互打）', outcome: { type: 'combat', map: 'riot' } },   // ★多陣營戰：第三勢力暴民與駐軍互毆，玩家趁亂通過
       { label: '繞遠路（安全離開）', outcome: { type: 'nothing' } },
+    ] },
+  { id: 'vault', title: '封存金庫', text: '情報指出附近一處設施金庫藏有「未登錄」的物資——但被雙層門封死，要在兩間守備室分別觸發開關才進得去。',
+    choices: [
+      { label: '潛入破解（雙開關→密封容器）', hint: '進場：壓制兩間守備室、按下兩個開關開門，撿走密封容器撤離（撤離後才知是什麼）', outcome: { type: 'combat', map: 'vault' } },   // ★密封容器驗證關
+      { label: '情報太冒險，放棄（安全離開）', outcome: { type: 'nothing' } },
     ] },
   { id: 'wounded', title: '傷兵求救', text: '無線電傳來一名落單探員的求救——但這一帶剛有交火，可能是陷阱。',
     choices: [
@@ -1685,7 +1749,7 @@ function startIntro() {
   buildMapDerived('intro');
   for (const d of MAP.doors) d.open = false;
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }
-  reservations = new Map(); patrolClaims = new Map(); patrolPool = []; enemyIdSeq = 1; bullets = []; grenades = []; smokes = []; flashFx = []; particles = []; drops = []; fileDrop = null; prisoners = []; corpses = []; decals = []; soundPings = []; shakeAmt = 0; kickY = 0; hitstopT = 0;
+  reservations = new Map(); patrolClaims = new Map(); patrolPool = []; enemyIdSeq = 1; bullets = []; grenades = []; smokes = []; flashFx = []; particles = []; drops = []; fileDrop = null; cacheGround = []; prisoners = []; corpses = []; decals = []; soundPings = []; shakeAmt = 0; kickY = 0; hitstopT = 0;
   searchFocusNode = null; searchSet = null; searchCleared = null; searchConsumedT = -Infinity;
   // 主角＝players[0]（管制室，看著下方）；演出期由腳本移動，鏡頭固定，控制鎖住
   players = [makePlayer(0, introCast[0], { x: 390, y: 240 })];
@@ -1845,7 +1909,7 @@ function skipIntro() {
 const RARITY_WEIGHT = { common: 60, uncommon: 25, rare: 12, epic: 4, legendary: 1 };
 const weaponValue = (W) => W.damage * W.fireRate * (W.range / 400);   // 粗略估值（自動配裝用）
 function weightedPick(ids, weightOf) { const w = ids.map(weightOf); const tot = w.reduce((a, b) => a + b, 0); let r = srand() * tot; for (let i = 0; i < ids.length; i++) { r -= w[i]; if (r <= 0) return ids[i]; } return ids[ids.length - 1]; }   // 非戰鬥(loot)＝吃種子
-const rollLootWeapon = () => weightedPick(availPool('weapon', LOOT_WEAPON_IDS), id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
+const rollLootWeapon = () => weightedPick(randomWeaponPool(availPool('weapon', LOOT_WEAPON_IDS)), id => RARITY_WEIGHT[WEAPONS[id].rarity] || 10);
 
 // --- 倉庫容量 ---
 const warehouseCap = () => roster.length * CONFIG.loadout.slotsPerMember;
@@ -2323,11 +2387,12 @@ function killUnit(u) {
   spawnDeath(u.pos);
   hitstop(CONFIG.juice.hitstopKill); addShakeAt(u.pos, CONFIG.juice.shakeKill);   // 擊殺：頓幀 + 較大震動
   pushDecal(u.pos.x, u.pos.y, 8 + Math.random() * 3, 'rgba(92,15,22,0.5)');       // 死亡血池
-  corpses.push({ x: u.pos.x, y: u.pos.y, enemy: u.faction === 'enemy' });   // 地上留陣亡叉叉（整場保留）
-  if (u.faction === 'enemy') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); releasePatrol(u); }
+  corpses.push({ x: u.pos.x, y: u.pos.y, enemy: u.faction !== 'player' });   // 地上留陣亡叉叉（任一 AI 陣營＝敵屍）
+  if (u.faction !== 'player') { spawnDrop(u, CONFIG.ammo.salvageEnemy); u.dead = true; releaseReservation(u); releasePatrol(u); }   // 任一 AI 陣營死亡（駐軍/暴民…）
   else {
     spawnDrop(u, CONFIG.ammo.salvageAlly);
     if (u.hasFile) { u.hasFile = false; fileDrop = { x: u.pos.x, y: u.pos.y }; Sfx.play('death', u.pos); }   // 攜帶者陣亡→機密檔案掉在原地，待人回收（不回收就撤離＝任務失敗）
+    if (u.caches > 0) { for (let i = 0; i < u.caches; i++) cacheGround.push({ x: u.pos.x + (Math.random() * 16 - 8), y: u.pos.y + (Math.random() * 16 - 8) }); u.caches = 0; Sfx.play('death', u.pos); }   // 運搬者陣亡→密封容器掉在原地，待人回收（比照機密檔案）
     const wasControlled = (u.state === 'CONTROLLED') || controlledId === u.id;
     u.state = 'DEAD'; deadCount++;
     if (!fromSandbox && !playtestMode && !introActive) runStats.kia++;   // 戰役中陣亡才計入情報點扣分（序章/沙盒/試玩不算）
@@ -2363,6 +2428,41 @@ function updateFile() {
   for (const p of activePlayers()) {
     if (dist(p.pos, fileDrop) <= CONFIG.pickupRadius) { p.hasFile = true; spawnPickup(fileDrop); fileDrop = null; return; }
   }
+}
+// 密封容器：地上的容器，任一活動我方走到 pickupRadius 內即背上（u.caches++，比照機密檔案；撤離才開封）
+function updateCaches() {
+  if (!cacheGround.length) return;
+  for (let i = cacheGround.length - 1; i >= 0; i--) {
+    const c = cacheGround[i];
+    for (const p of activePlayers()) { if (dist(p.pos, c) <= CONFIG.pickupRadius) { p.caches = (p.caches || 0) + 1; spawnPickup(c); cacheGround.splice(i, 1); break; } }
+  }
+}
+// 撿取/拾取的「格佔有」（前瞻：未來 slot 背包用；現在全回 1、只有大槍 2）
+function slotsOf(kind, id) { if (kind === 'weapon') { const w = WEAPONS[id]; return (w && w.weight >= 1.6) ? 2 : 1; } return 1; }
+// 「基本階」＝common 稀有度（武器/裝備/道具）或最基礎技能(heal/firstaid)；密封容器抽選排除之
+function isBasic(kind, id) {
+  if (kind === 'ability') return id === 'heal' || id === 'firstaid';
+  const cat = kind === 'weapon' ? WEAPONS : kind === 'equip' ? EQUIPMENT : ITEMS;
+  return !!(cat[id] && cat[id].rarity === 'common');
+}
+const MYSTERY_CAT_WEIGHT = { weapon: 3, equip: 2, item: 2, ability: 1.5 };
+// 密封容器開封＝事後抽選：抽類型→抽內容。排除基本階、排除 noRandom(Siren)、**不過 availPool（含未解鎖）**；run 限定進倉庫。回傳「類型 · 名稱」。
+function rollMysteryLoot() {
+  const pools = {
+    weapon: randomWeaponPool(WEAPON_IDS.filter(id => !['fangs', 'lmg', 'shotgun'].includes(id) && !isBasic('weapon', id))),   // 玩家可用、非基本、非 noRandom
+    equip: EQUIP_IDS.filter(id => !isBasic('equip', id)),
+    item: ITEM_IDS.filter(id => !isBasic('item', id)),
+    ability: ABILITY_IDS.filter(id => !isBasic('ability', id)),
+  };
+  const cats = Object.keys(pools).filter(c => pools[c].length);
+  if (!cats.length) return '（空）';
+  const cat = weightedPick(cats, c => MYSTERY_CAT_WEIGHT[c] || 1);
+  const ids = pools[cat];
+  const id = (cat === 'ability') ? rngPick(ids) : weightedPick(ids, x => RARITY_WEIGHT[(cat === 'weapon' ? WEAPONS : cat === 'equip' ? EQUIPMENT : ITEMS)[x].rarity] || 10);
+  if (cat === 'item') giveItemStack(id); else warehouse.push({ kind: cat, id });   // 進倉庫＝該 run 可用（道具給整疊）
+  const nm = (cat === 'weapon' ? WEAPONS : cat === 'equip' ? EQUIPMENT : cat === 'item' ? ITEMS : ABILITIES)[id].name;
+  const lab = { weapon: '武器', equip: '裝備', item: '道具', ability: '技能' }[cat];
+  return `${lab} · ${nm}`;
 }
 
 /* =====================================================================
@@ -3118,7 +3218,7 @@ function update(dt) {
   const movers = [...activePlayers(), ...enemies.filter(e => !e.dead)];
   separate(movers);
   for (const u of movers) collideWalls(u);
-  updateDrops(); updateFile();
+  updateDrops(); updateFile(); updateCaches();
 
   // 7) 撤離判定
   for (const p of players) {
@@ -3178,7 +3278,7 @@ function draw() {
   if (!debugView) drawFog();
 
   // ---- 霧上：淡牆骨架（空間參考）+ 機密檔案掉落標記（永遠可見）----
-  ctx.save(); applyCam(); drawSkeleton(); drawFileDrop(); ctx.restore();
+  ctx.save(); applyCam(); drawSkeleton(); drawFileDrop(); drawCacheDrops(); ctx.restore();
 
   // ---- 螢幕層：血條/標記/HUD/卡片 ----（演出鎖控制時隱藏＝乾淨電影感；gate 解鎖時照常）
   if (!(cutscene && cutscene.lock)) { drawScreenOverlays(); drawHUD(); drawCards(); drawSoundEdges(); }
@@ -3396,6 +3496,22 @@ function drawFileDrop() {
   ctx.fillStyle = '#1a1208'; ctx.fillRect(fileDrop.x - 6, fileDrop.y - 5, 12, 3);   // 資料夾上緣
   ctx.fillStyle = '#ffd27d'; ctx.font = 'bold 10px Consolas'; ctx.textAlign = 'center';
   ctx.fillText('機密檔案', fileDrop.x, fileDrop.y - 16); ctx.textAlign = 'left';
+  ctx.restore();
+}
+// 密封容器掉落標記：畫在迷霧之上＝永遠可見（比照機密檔案；?＝撤離才知是什麼）
+function drawCacheDrops() {
+  if (!cacheGround.length) return;
+  const pulse = 0.5 + 0.5 * Math.sin(simTime * 6);
+  ctx.save();
+  for (const c of cacheGround) {
+    ctx.lineWidth = 2.5; ctx.strokeStyle = `rgba(120,220,235,${0.45 + 0.5 * pulse})`;
+    ctx.beginPath(); ctx.arc(c.x, c.y, 11 + 5 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#1a2630'; ctx.fillRect(c.x - 6, c.y - 6, 12, 12);                 // 密封箱
+    ctx.strokeStyle = '#7fdce8'; ctx.lineWidth = 1.4; ctx.strokeRect(c.x - 6, c.y - 6, 12, 12);
+    ctx.fillStyle = '#7fdce8'; ctx.font = 'bold 11px Consolas'; ctx.textAlign = 'center';
+    ctx.fillText('?', c.x, c.y + 4);
+    ctx.fillText('密封容器', c.x, c.y - 16); ctx.textAlign = 'left';
+  }
   ctx.restore();
 }
 function drawCorpses() {
@@ -3761,6 +3877,25 @@ function drawHUD() {
       ctx.fillStyle = 'rgba(255,210,125,0.96)'; ctx.font = 'bold 10px Consolas'; ctx.fillText('檔案', ex - dx * 24, ey - dy * 24);
     }
     ctx.textAlign = 'left';
+  }
+
+  // 密封容器：攜帶中提示（資訊色，非必須） + 地上未回收的邊框箭頭（比照機密檔案，可再撿）
+  const carryingCaches = activePlayers().reduce((n, p) => n + (p.caches || 0), 0);
+  if (carryingCaches > 0) {
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(120,220,235,0.92)'; ctx.font = 'bold 13px Consolas';
+    ctx.fillText('📦 密封容器 ×' + carryingCaches + '（帶著撤離才會開封）', cv.width / 2, 74); ctx.textAlign = 'left';
+  }
+  if (cacheGround.length) {
+    for (const c of cacheGround) {
+      const sp = w2s(c), cx = cv.width / 2, cy = cv.height / 2;
+      if (sp.x >= 0 && sp.x <= cv.width && sp.y >= 0 && sp.y <= cv.height) continue;   // 在畫面內就不畫箭頭（地上標記已可見）
+      let dx = sp.x - cx, dy = sp.y - cy; const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len;
+      const m = 44, tx = dx > 0 ? (cv.width - m - cx) / dx : dx < 0 ? (m - cx) / dx : Infinity, ty = dy > 0 ? (cv.height - m - cy) / dy : dy < 0 ? (m - cy) / dy : Infinity;
+      const t = Math.min(tx, ty), ex = cx + dx * t, ey = cy + dy * t;
+      ctx.save(); ctx.translate(ex, ey); ctx.rotate(Math.atan2(dy, dx));
+      ctx.fillStyle = 'rgba(120,220,235,0.95)'; ctx.beginPath(); ctx.moveTo(15, 0); ctx.lineTo(-9, -10); ctx.lineTo(-9, 10); ctx.closePath(); ctx.fill(); ctx.restore();
+      ctx.fillStyle = 'rgba(120,220,235,0.95)'; ctx.font = 'bold 10px Consolas'; ctx.textAlign = 'center'; ctx.fillText('容器', ex - dx * 24, ey - dy * 24); ctx.textAlign = 'left';
+    }
   }
 
   // 控制提示（卡片帶上方）
@@ -4211,6 +4346,9 @@ function drawSettle() {
   ctx.fillStyle = '#5fd06b'; ctx.fillText('撤出: ' + (sum.extracted.join('、') || '—'), 90, 104);
   ctx.fillStyle = '#8a6a6a'; ctx.fillText('陣亡: ' + (sum.dead.join('、') || '—'), 90, 124);
   if (sum.fileSafe) { ctx.fillStyle = '#ffd27a'; ctx.fillText('📁 機密檔案已帶出', cv.width - 260, 104); }
+  if (sum.cacheReveal && sum.cacheReveal.length) {   // 密封容器開封結果（已進倉庫，本 run 可用）
+    ctx.fillStyle = '#7fdce8'; ctx.fillText('📦 密封容器開啟：' + sum.cacheReveal.join('、') + '（已入倉庫）', 90, 144);
+  }
 
   if (settlePhase === 'PASS') {
     const r = roster[settleSel];
@@ -4728,7 +4866,7 @@ let sandboxLast = null;         // 上一場結果（撤離/陣亡）顯示用
 let sandboxEl = null, sandboxMembersEl = null, sandboxMapText = null, sandboxMapSel = null, sandboxMsgEl = null, sandboxResultEl = null, sandboxRows = [];
 
 const defaultMember = () => ({ archetypeId: rngPick(ARCHETYPE_IDS), weaponId: 'rifle', weaponId2: 'pistol', abilityId: 'heal', equipId: '', itemId: '' });
-const randomMember = () => { const wp = availPool('weapon', SANDBOX_WEAPON_IDS); return { archetypeId: rngPick(availPool('archetype', ARCHETYPE_IDS)), weaponId: rngPick(wp), weaponId2: rngPick(['pistol', 'knife', 'pistol', ...wp]), abilityId: rngPick(availPool('ability', ABILITY_IDS)), equipId: rngPick(['', ...availPool('equip', EQUIP_IDS)]), itemId: rngPick(['', '', ...availPool('item', ITEM_IDS)]) }; };
+const randomMember = () => { const wp = randomWeaponPool(availPool('weapon', SANDBOX_WEAPON_IDS)); return { archetypeId: rngPick(availPool('archetype', ARCHETYPE_IDS)), weaponId: rngPick(wp), weaponId2: rngPick(['pistol', 'knife', 'pistol', ...wp]), abilityId: rngPick(availPool('ability', ABILITY_IDS)), equipId: rngPick(['', ...availPool('equip', EQUIP_IDS)]), itemId: rngPick(['', '', ...availPool('item', ITEM_IDS)]) }; };
 function makeSandboxMember(m, used) {
   const r = makeRecruit(used);
   if (m.archetypeId && ARCHETYPES[m.archetypeId] && isAvailable('archetype', m.archetypeId)) r.archetypeId = m.archetypeId;
@@ -5027,7 +5165,7 @@ function initSandboxUI() {
 
     const h3b = document.createElement('h3'); h3b.textContent = '地圖'; card.appendChild(h3b);
     const r2 = document.createElement('div'); r2.className = 'row';
-    sandboxMapSel = document.createElement('select'); ['alpha', 'bravo', 'outpost', 'lanes', 'riot', 'finale'].forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k + '（' + (MAPS[k] ? MAPS[k].label : k) + '）'; sandboxMapSel.appendChild(o); });
+    sandboxMapSel = document.createElement('select'); ['alpha', 'bravo', 'outpost', 'lanes', 'riot', 'vault', 'finale'].forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k + '（' + (MAPS[k] ? MAPS[k].label : k) + '）'; sandboxMapSel.appendChild(o); });
     const fill = document.createElement('button'); fill.textContent = '↧ 載入此內建到下方'; fill.addEventListener('click', () => { sandboxMapText.value = JSON.stringify(MAPS[sandboxMapSel.value], null, 2); });
     const mhint = document.createElement('span'); mhint.className = 'muted'; mhint.textContent = '下方空白＝用左側內建；貼上 JSON＝用貼上的';
     r2.appendChild(sandboxMapSel); r2.appendChild(fill); r2.appendChild(mhint); card.appendChild(r2);
