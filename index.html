@@ -365,6 +365,8 @@ const ITEMS = {
 };
 const ITEM_IDS = Object.keys(ITEMS);
 const LOOT_ITEM_IDS = ITEM_IDS.slice();
+const ITEM_STACK_MAX = 3;   // 消耗品一疊上限；取得即一疊(3)，休息可堆疊到上限
+function giveItemStack(id) { warehouse.push({ kind: 'item', id, count: ITEM_STACK_MAX }); }   // 取得道具＝整疊進倉庫
 
 /* =====================================================================
    ARCHETYPES — 我方待機個性（只看「看哪」一軸，by-the-book→chill 三型）。招募隨機抽一種。
@@ -531,7 +533,7 @@ function makeRecruit(used) {
     weaponId2: FLOOR_WEAPON, allocatedAmmo2: 0,   // 副武器（預設 pistol 底線後備；X 換槍）
     bonusMaxHp: 0, hp: CONFIG.unitHp, allocatedAmmo: CONFIG.ammo.defaultAlloc, disciplineOverride: null,
     tier: 0, passives: [],            // 升階等級(0~3)＋已學被動id；戰果結算二選一累積
-    equipId: null, itemId: null };   // 裝備（持續被動）/ 道具（一次性）各 1 槽，預設空
+    equipId: null, itemId: null, itemCount: 0 };   // 裝備（持續被動）/ 道具（消耗品，itemCount 充能 0~3）各 1 槽，預設空
 }
 
 /* =====================================================================
@@ -1283,7 +1285,7 @@ function makePlayer(i, cfg, pos) {
     weaponId: cfg.weaponId, weapon: W, magazine, ammoInMag: magazine, ammoReserve: reserve, reloadT: 0, reloadDur: 0, bloom: 0,
     weapon2: sec, swapT: 0, turnMul,   // 副武器槽 + 換槍冷卻 + 轉向倍率(換槍時重算 turnSpeed)
     abilityId: cfg.abilityId, ability: ab, abilityCd: 0,
-    equipId: cfg.equipId || null, itemId: cfg.itemId || null, itemUsed: false,   // 裝備槽 / 道具槽
+    equipId: cfg.equipId || null, itemId: cfg.itemId || null, itemCount: cfg.itemId ? (cfg.itemCount || 1) : 0,   // 裝備槽 / 道具槽(itemCount 充能)
     dmgResist: fx.dmgResist || 0, reloadMul: (fx.reloadMul || 1) * pReload, spreadMul: fx.spreadMul || 1,
     turnSpeed: W.turnSpeed * (fx.turnMul || 1) * pTurn, moveMul: fx.moveMul || 1,
     coneHalfDeg: pCone,                    // 斥候＝視錐更寬（null＝用全域）
@@ -1330,7 +1332,7 @@ const baseRoster = () => { const used = new Set(); return Array.from({ length: C
 const rosterFromPlayer = (p) => {
   const eqAdd = (p.equipId && EQUIPMENT[p.equipId] && EQUIPMENT[p.equipId].fx.maxHpAdd) || 0;  // 裝備加的 maxHp 不算進 bonusMaxHp
   const w2 = p.weapon2 || null;   // 副武器槽（換槍後 active/stowed 可能已對調，以當下 active 為 weaponId）
-  return { name: p.name, hue: p.hue, strength: p.strength, weaponId: p.weaponId, abilityId: p.abilityId, archetypeId: p.archetypeId, tier: p.tier || 0, passives: (p.passives || []).slice(), weaponId2: w2 ? w2.weaponId : null, allocatedAmmo2: w2 ? (isInfiniteAmmo(w2.weaponId) ? 0 : w2.ammoReserve) : 0, bonusMaxHp: p.maxHp - CONFIG.unitHp - eqAdd, hp: p.hp, allocatedAmmo: isInfiniteAmmo(p.weaponId) ? CONFIG.ammo.defaultAlloc : p.ammoReserve, disciplineOverride: p.disciplineOverride || null, equipId: p.equipId || null, itemId: p.itemUsed ? null : (p.itemId || null), carriesFile: !!p.hasFile };
+  return { name: p.name, hue: p.hue, strength: p.strength, weaponId: p.weaponId, abilityId: p.abilityId, archetypeId: p.archetypeId, tier: p.tier || 0, passives: (p.passives || []).slice(), weaponId2: w2 ? w2.weaponId : null, allocatedAmmo2: w2 ? (isInfiniteAmmo(w2.weaponId) ? 0 : w2.ammoReserve) : 0, bonusMaxHp: p.maxHp - CONFIG.unitHp - eqAdd, hp: p.hp, allocatedAmmo: isInfiniteAmmo(p.weaponId) ? CONFIG.ammo.defaultAlloc : p.ammoReserve, disciplineOverride: p.disciplineOverride || null, equipId: p.equipId || null, itemId: (p.itemCount > 0 ? p.itemId : null), itemCount: p.itemCount || 0, carriesFile: !!p.hasFile };
 };
 // 機密檔案恆有且只有一名攜帶者：跨關由撤出者保留旗標；若無（序章後首次/異常）給第一人，多於一名只留第一名
 function ensureFileCarrier() {
@@ -1539,7 +1541,7 @@ function applyEventOutcome(o, mi) {
     case 'ammo': { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * (o.big ? 6 : 3); ammoStock[id] = (ammoStock[id] || 0) + amt; return `${WEAPONS[id].name}彈 +${amt}`; }
     case 'weapon': { const id = o.id || rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); return `取得武器 ${WEAPONS[id].name}`; }
     case 'equip': { const id = o.id || rngPick(availPool('equip', LOOT_EQUIP_IDS)); warehouse.push({ kind: 'equip', id }); return `取得裝備 ${EQUIPMENT[id].name}`; }
-    case 'item': { const id = o.id || rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); return `取得道具 ${ITEMS[id].name}`; }
+    case 'item': { const id = o.id || rngPick(LOOT_ITEM_IDS); giveItemStack(id); return `取得道具 ${ITEMS[id].name} ×${ITEM_STACK_MAX}`; }
     case 'loot': { const out = []; for (let i = 0; i < (o.n || 1); i++) out.push(applyEventOutcome(rngPick([{ type: 'weapon' }, { type: 'equip' }, { type: 'item' }]))); return out.join('、'); }
     case 'heal': { for (const r of roster) r.hp = Math.min(rmaxhp(r), (r.hp || 0) + (o.amt || 20)); return `全隊回復 ${o.amt || 20}HP`; }
     case 'damage': { for (const r of roster) r.hp = Math.max(1, (r.hp != null ? r.hp : rmaxhp(r)) - (o.amt || 10)); return `全隊 −${o.amt || 10}HP（未致命）`; }
@@ -1793,7 +1795,7 @@ function rollArmory(n) {
 }
 function armoryPick(i) {
   if (scene !== 'ARMORY' || !armoryOffers || i < 0 || i >= armoryOffers.length) return;
-  const o = armoryOffers[i]; warehouse.push({ kind: o.type, id: o.id }); armoryOffers = null; advanceNode();
+  const o = armoryOffers[i]; if (o.type === 'item') giveItemStack(o.id); else warehouse.push({ kind: o.type, id: o.id }); armoryOffers = null; advanceNode();
 }
 
 // --- 進入休息關：整理臨時背包（彈藥折算進儲備、item 進倉庫 haul）---
@@ -1804,7 +1806,7 @@ function enterRest(tutorial = false) {
   for (const it of backpack) {
     if (it.kind === 'weapon') { if (!isInfiniteAmmo(it.id)) ammoStock[it.id] = (ammoStock[it.id] || 0) + (it.ammo || 0); warehouse.push({ kind: 'weapon', id: it.id }); }
     else if (it.kind === 'ability') warehouse.push({ kind: 'ability', id: it.id });
-    else if (it.kind === 'item') warehouse.push({ kind: 'item', id: it.id });    // 撿到的道具進倉庫（休息關配到道具槽）
+    else if (it.kind === 'item') giveItemStack(it.id);    // 撿到的道具進倉庫＝整疊（休息關配到道具槽）
     else if (it.kind === 'equip') warehouse.push({ kind: 'equip', id: it.id });   // 撿到的裝備進倉庫
   }
   backpack = [];
@@ -1827,7 +1829,7 @@ function rollResupply() {
     } else if (seen[c]) { const ids = WEAPON_IDS.filter(id => !isInfiniteAmmo(id) && !WEAPONS[id].silent), id = rngPick(ids), amt = WEAPONS[id].magazine * 2; ammoStock[id] = (ammoStock[id] || 0) + amt; got.push(`${WEAPONS[id].name}彈+${amt}`); }   // 同類型重抽→改給彈藥(不重複物品)
     else if (c === 'weapon') { const id = rollLootWeapon(); warehouse.push({ kind: 'weapon', id }); got.push(WEAPONS[id].name); }
     else if (c === 'equip') { const id = rngPick(availPool('equip', LOOT_EQUIP_IDS)); warehouse.push({ kind: 'equip', id }); got.push(EQUIPMENT[id].name); }
-    else if (c === 'item') { const id = rngPick(LOOT_ITEM_IDS); warehouse.push({ kind: 'item', id }); got.push(ITEMS[id].name); }
+    else if (c === 'item') { const id = rngPick(LOOT_ITEM_IDS); giveItemStack(id); got.push(ITEMS[id].name + ' ×' + ITEM_STACK_MAX); }
     else if (c === 'ability') { const id = rngPick(availPool('ability', LOOT_ABILITY_IDS)); warehouse.push({ kind: 'ability', id }); got.push(ABILITIES[id].name); }
     seen[c] = true;
   }
@@ -1850,7 +1852,7 @@ function applyOffer(o, mi) {
   else if (o.type === 'weapon') { warehouse.push({ kind: 'weapon', id: o.id }); restMsg = `搜刮：${WEAPONS[o.id].name} 入倉庫`; }
   else if (o.type === 'ability') { warehouse.push({ kind: 'ability', id: o.id }); restMsg = `搜刮：${ABILITIES[o.id].name} 入倉庫`; }
   else if (o.type === 'equip') { warehouse.push({ kind: 'equip', id: o.id }); restMsg = `搜刮：${EQUIPMENT[o.id].name} 入倉庫`; }
-  else if (o.type === 'item') { warehouse.push({ kind: 'item', id: o.id }); restMsg = `搜刮：${ITEMS[o.id].name} 入倉庫`; }
+  else if (o.type === 'item') { giveItemStack(o.id); restMsg = `搜刮：${ITEMS[o.id].name} ×${ITEM_STACK_MAX} 入倉庫`; }
 }
 // 休息轉職（pivot）：把某員 archetype 換成下一型，換樹但保留已學被動；後續升階抽新樹的對應階
 function cycleArchetype(mi) {
@@ -1904,13 +1906,28 @@ function equipAbilityFromWarehouse(whIdx, mi) {
   if (oldId) warehouse.push({ kind: 'ability', id: oldId }); restSel = null;
 }
 function unequipAbility(mi) { const oldId = roster[mi].abilityId; if (!oldId) return; roster[mi].abilityId = null; warehouse.push({ kind: 'ability', id: oldId }); }
-// 通用裝備/道具槽（kind 'equip'→field 'equipId'；kind 'item'→field 'itemId'）
+// 通用裝備/道具槽（kind 'equip'→field 'equipId'；kind 'item'→field 'itemId'＋itemCount 充能堆疊上限 ITEM_STACK_MAX）
 function equipGearFromWarehouse(whIdx, mi, kind, field) {
   const it = warehouse[whIdx]; if (!it || it.kind !== kind) return;
-  const oldId = roster[mi][field]; warehouse.splice(whIdx, 1); roster[mi][field] = it.id;
+  const r = roster[mi];
+  if (kind === 'item') {   // 消耗品：同道具堆疊(上限3)、不同道具則整疊換出；超過上限的退回倉庫
+    const add = it.count || 1;
+    if (r.itemId && r.itemId !== it.id) { warehouse.push({ kind: 'item', id: r.itemId, count: r.itemCount || 0 }); r.itemId = null; r.itemCount = 0; }
+    r.itemId = it.id;
+    const take = Math.min(ITEM_STACK_MAX - (r.itemCount || 0), add);
+    r.itemCount = (r.itemCount || 0) + take;
+    warehouse.splice(whIdx, 1);
+    if (add - take > 0) warehouse.push({ kind: 'item', id: it.id, count: add - take });
+    restSel = null; return;
+  }
+  const oldId = r[field]; warehouse.splice(whIdx, 1); r[field] = it.id;
   if (oldId) warehouse.push({ kind, id: oldId }); restSel = null;
 }
-function unequipGear(mi, kind, field) { const oldId = roster[mi][field]; if (!oldId) return; roster[mi][field] = null; warehouse.push({ kind, id: oldId }); }
+function unequipGear(mi, kind, field) {
+  const r = roster[mi]; const oldId = r[field]; if (!oldId) return;
+  if (kind === 'item') { warehouse.push({ kind: 'item', id: oldId, count: r.itemCount || 0 }); r.itemId = null; r.itemCount = 0; return; }
+  r[field] = null; warehouse.push({ kind, id: oldId });
+}
 function discardWarehouse(whIdx) { if (whIdx >= 0 && whIdx < warehouse.length) warehouse.splice(whIdx, 1); restSel = null; }
 function allocAmmo(mi, dir, slot = 1) {
   const r = roster[mi], wf = WF(slot), af = AF(slot), type = r[wf]; if (!type || isInfiniteAmmo(type)) return;
@@ -2069,7 +2086,7 @@ function useAbility(u) {
 }
 // 道具（一次性，C 鍵；用完消失）：瞬補 / 補彈 / 短時 buff / 手榴彈
 function useItem(u) {
-  if (!u || u.state !== 'CONTROLLED' || !u.itemId || u.itemUsed) return;
+  if (!u || u.state !== 'CONTROLLED' || !u.itemId || !(u.itemCount > 0)) return;
   const it = ITEMS[u.itemId];
   if (it.heal) { u.hp = Math.min(u.maxHp, u.hp + it.heal); spawnHeal(u.pos); }
   if (it.refill) { u.ammoInMag = unitMag(u); if (!isInfiniteAmmo(u.weaponId)) u.ammoReserve += unitMag(u) * 2; spawnPickup(u.pos); }
@@ -2077,7 +2094,7 @@ function useItem(u) {
   if (it.grenade) throwGrenade(u, it.grenade);
   if (it.smoke) throwSmoke(u, it.smoke);
   if (it.flash) throwFlash(u, it.flash);
-  u.itemUsed = true;   // 用完即消（rosterFromPlayer 不再帶回）
+  u.itemCount = Math.max(0, (u.itemCount || 0) - 1);   // 消耗一顆充能（剩 0＝用完，rosterFromPlayer 不再帶回）
 }
 // 手榴彈：朝瞄準方向「丟出去」一顆會飛的手榴彈→落點才 360° 炸開散射一批彈丸（不算爆破半徑，威力＝被幾顆打中＝中心密/遠處稀，自然衰減）。
 function throwGrenade(u, G) {
@@ -3734,7 +3751,7 @@ function drawCard(p, x, y, w, h, i) {
   if (!inactive) {
     ctx.textAlign = 'right'; ctx.font = '8px Consolas';
     ctx.fillStyle = p.equipId ? '#9fd0e0' : '#4a525c'; ctx.fillText('🛡' + (p.equipId ? EQUIPMENT[p.equipId].name : '—'), x + w - pad, y + 27);
-    ctx.fillStyle = (p.itemId && !p.itemUsed) ? '#ffd27d' : '#4a525c'; ctx.fillText('C ' + (p.itemId && !p.itemUsed ? ITEMS[p.itemId].name : (p.itemId ? '用過' : '—')), x + w - pad, y + 38);
+    ctx.fillStyle = (p.itemId && p.itemCount > 0) ? '#ffd27d' : '#4a525c'; ctx.fillText('C ' + (p.itemId && p.itemCount > 0 ? ITEMS[p.itemId].name + ' ×' + p.itemCount : (p.itemId ? '用完' : '—')), x + w - pad, y + 38);
     ctx.textAlign = 'left';
   }
 
@@ -3852,7 +3869,7 @@ function drawLoadoutCard(mi, x, y, w, h) {
     () => equipAbilityFromWarehouse(restSel.idx, mi), () => unequipAbility(mi), !!r.abilityId);
   row(y + 88, 20, 'rgba(159,208,224,0.16)', `🛡 ${r.equipId ? EQUIPMENT[r.equipId].name : '—'}`, manage && sel && sel.kind === 'equip',
     () => equipGearFromWarehouse(restSel.idx, mi, 'equip', 'equipId'), () => unequipGear(mi, 'equip', 'equipId'), !!r.equipId);
-  row(y + 110, 20, 'rgba(255,210,125,0.16)', `Q ${r.itemId ? ITEMS[r.itemId].name : '—'}`, manage && sel && sel.kind === 'item',
+  row(y + 110, 20, 'rgba(255,210,125,0.16)', `C ${r.itemId ? ITEMS[r.itemId].name + ' ×' + (r.itemCount || 0) : '—'}`, manage && sel && sel.kind === 'item',
     () => equipGearFromWarehouse(restSel.idx, mi, 'item', 'itemId'), () => unequipGear(mi, 'item', 'itemId'), !!r.itemId);
   // 彈藥分配（對目前編輯的武器槽；無限武器顯示 ∞）
   ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0';
@@ -3902,7 +3919,7 @@ function drawRestWarehouse(wy) {
       const meta = it.kind === 'weapon' ? { name: WEAPONS[it.id].name, tag: '武器', col: rarityColor(WEAPONS[it.id].rarity), dot: true }
         : it.kind === 'ability' ? { name: ABILITIES[it.id].name, tag: '技能', col: '#c0a0ff' }
           : it.kind === 'equip' ? { name: EQUIPMENT[it.id].name, tag: '裝備', col: '#9fd0e0' }
-            : { name: ITEMS[it.id].name, tag: '道具', col: '#ffd27d' };
+            : { name: ITEMS[it.id].name + (it.count > 1 ? ' ×' + it.count : ''), tag: '道具', col: '#ffd27d' };
       if (meta.dot) { ctx.beginPath(); ctx.fillStyle = meta.col; ctx.arc(x + 8, y + 9, 3.5, 0, Math.PI * 2); ctx.fill(); }
       ctx.textAlign = 'center'; ctx.font = '10px Consolas'; ctx.fillStyle = meta.dot ? '#dde6ef' : meta.col;
       ctx.fillText(meta.name, x + cw / 2, y + 30); ctx.font = '8px Consolas'; ctx.fillStyle = '#8b97a5'; ctx.fillText(meta.tag, x + cw / 2, y + 46);
@@ -4637,6 +4654,7 @@ function makeSandboxMember(m, used) {
   if (m.abilityId && ABILITIES[m.abilityId] && isAvailable('ability', m.abilityId)) r.abilityId = m.abilityId;
   r.equipId = (m.equipId && EQUIPMENT[m.equipId] && isAvailable('equip', m.equipId)) ? m.equipId : null;
   r.itemId = (m.itemId && ITEMS[m.itemId] && isAvailable('item', m.itemId)) ? m.itemId : null;   // 道具槽（未解鎖不套用）
+  r.itemCount = r.itemId ? ITEM_STACK_MAX : 0;   // 沙盒：選了道具就給滿一疊
   return r;
 }
 function loadSandboxCfg() { try { return JSON.parse(localStorage.getItem(SANDBOX_STORE_KEY) || 'null'); } catch (e) { return null; } }
