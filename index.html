@@ -2874,6 +2874,9 @@ function editorMouseUp() {
   if (editDrag && isDragTool(editTool)) { const a = editDrag, b = snapPt({ x: mouse.mx, y: mouse.my }); if (dist(a, b) >= 8) editorCommitSeg(a, b); editDrag = null; }
 }
 cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('wheel', e => {   // 戰鬥中滾輪＝換槍(主↔副)；swapT 冷卻自動防連刷
+  if (scene === 'COMBAT' && Input.locked && controlledId != null) { seizeIfEscorting(); swapWeapon(players[controlledId]); e.preventDefault(); }
+}, { passive: false });
 
 // 路線圖：游標下的可選節點 id（無則 null）
 function roadNodeAt(x, y) {
@@ -3850,39 +3853,37 @@ function drawLoadoutCard(mi, x, y, w, h) {
       if (canUnequip) uiButton(x + w - 44, yt + 1, 36, 17, '▸倉', unequipFn, { font: '10px Consolas' });
     }
   };
-  // 武器（主/副 雙槽：點 主/副 切換要編輯的槽；裝備/卸下/彈藥皆對該槽）
-  const wslot = restWslot[mi] || 1;
-  const slotWid = wslot === 2 ? r.weaponId2 : r.weaponId, slotW = slotWid ? WEAPONS[slotWid] : null;
-  if (manage && sel && sel.kind === 'weapon') { ctx.fillStyle = 'rgba(95,208,107,0.12)'; ctx.fillRect(x + 4, y + 44, w - 8, 20); }
-  ctx.textAlign = 'left'; ctx.font = 'bold 10px Consolas';
-  ctx.fillStyle = wslot === 1 ? '#bfe6ff' : '#5a6470'; ctx.fillText('主', x + pad, y + 58);
-  ctx.fillStyle = wslot === 2 ? '#bfe6ff' : '#5a6470'; ctx.fillText('副', x + pad + 16, y + 58);
-  ctx.beginPath(); ctx.fillStyle = slotW ? rarityColor(slotW.rarity) : '#555'; ctx.arc(x + pad + 36, y + 54, 3.5, 0, Math.PI * 2); ctx.fill();
-  ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0'; ctx.fillText(slotW ? `${slotW.name} 重${slotW.weight}` : '無', x + pad + 44, y + 58);
-  if (manage) {
-    pushRect(x + pad - 2, y + 46, 14, 16, () => { restWslot[mi] = 1; });   // 點「主」
-    pushRect(x + pad + 14, y + 46, 14, 16, () => { restWslot[mi] = 2; });  // 點「副」
-    if (sel && sel.kind === 'weapon') pushRect(x + 32, y + 44, w - 78, 20, () => equipWeaponFromWarehouse(restSel.idx, mi, wslot));
-    if (slotWid && !isInfiniteAmmo(slotWid)) uiButton(x + w - 44, y + 45, 36, 17, '▸倉', () => unequipWeapon(mi, wslot), { font: '10px Consolas' });
-  }
-  row(y + 66, 20, 'rgba(192,160,255,0.14)', `SK ${r.abilityId ? ABILITIES[r.abilityId].name : '—'}`, manage && sel && sel.kind === 'ability',
-    () => equipAbilityFromWarehouse(restSel.idx, mi), () => unequipAbility(mi), !!r.abilityId);
-  row(y + 88, 20, 'rgba(159,208,224,0.16)', `🛡 ${r.equipId ? EQUIPMENT[r.equipId].name : '—'}`, manage && sel && sel.kind === 'equip',
-    () => equipGearFromWarehouse(restSel.idx, mi, 'equip', 'equipId'), () => unequipGear(mi, 'equip', 'equipId'), !!r.equipId);
-  row(y + 110, 20, 'rgba(255,210,125,0.16)', `C ${r.itemId ? ITEMS[r.itemId].name + ' ×' + (r.itemCount || 0) : '—'}`, manage && sel && sel.kind === 'item',
-    () => equipGearFromWarehouse(restSel.idx, mi, 'item', 'itemId'), () => unequipGear(mi, 'item', 'itemId'), !!r.itemId);
-  // 彈藥分配（對目前編輯的武器槽；無限武器顯示 ∞）
-  ctx.textAlign = 'left'; ctx.font = '11px Consolas'; ctx.fillStyle = '#cdd6e0';
-  const aAmmo = wslot === 2 ? (r.allocatedAmmo2 || 0) : (r.allocatedAmmo || 0);
-  if (!slotWid || isInfiniteAmmo(slotWid)) {
-    ctx.fillText(`彈 ∞（${wslot === 2 ? '副' : '主'}・${slotWid ? '底線/近戰' : '無'}）`, x + pad, y + 148);
-  } else {
-    ctx.fillText(`彈 ${aAmmo}  儲備 ${ammoStock[slotWid] | 0}（${wslot === 2 ? '副' : '主'}）`, x + pad, y + 148);
+  // 武器：主/副「分開兩列」各自顯示（名稱列＋彈藥列）。選到倉庫武器時兩列皆可點＝裝備到該槽。
+  const weaponBlock = (yt, slot) => {
+    const wid = slot === 2 ? r.weaponId2 : r.weaponId, ww = wid ? WEAPONS[wid] : null;
+    const aAmmo = slot === 2 ? (r.allocatedAmmo2 || 0) : (r.allocatedAmmo || 0);
+    const selW = manage && sel && sel.kind === 'weapon';
+    if (selW) { ctx.fillStyle = 'rgba(95,208,107,0.12)'; ctx.fillRect(x + 4, yt, w - 8, 17); }   // 選到武器＝此槽可點裝備
+    ctx.textAlign = 'left'; ctx.font = 'bold 10px Consolas'; ctx.fillStyle = '#bfe6ff'; ctx.fillText(slot === 2 ? '副' : '主', x + pad, yt + 13);
+    ctx.beginPath(); ctx.fillStyle = ww ? rarityColor(ww.rarity) : '#555'; ctx.arc(x + pad + 22, yt + 9, 3.3, 0, Math.PI * 2); ctx.fill();
+    ctx.font = '11px Consolas'; ctx.fillStyle = ww ? '#cdd6e0' : '#7a828c'; ctx.fillText(ww ? `${ww.name} 重${ww.weight}` : '無', x + pad + 30, yt + 13);
     if (manage) {
-      uiButton(x + w - 76, y + 136, 22, 17, '−', () => allocAmmo(mi, -1, wslot), { font: 'bold 13px Consolas', enabled: aAmmo > 0 });
-      uiButton(x + w - 30, y + 136, 22, 17, '+', () => allocAmmo(mi, +1, wslot), { font: 'bold 13px Consolas', enabled: (ammoStock[slotWid] | 0) > 0 });
+      if (selW) pushRect(x + 4, yt, w - 50, 17, () => equipWeaponFromWarehouse(restSel.idx, mi, slot));
+      if (wid && !isInfiniteAmmo(wid)) uiButton(x + w - 42, yt, 34, 16, '▸倉', () => unequipWeapon(mi, slot), { font: '10px Consolas' });
     }
-  }
+    ctx.textAlign = 'left'; ctx.font = '10px Consolas'; ctx.fillStyle = '#9fb3c8';   // 該槽彈藥
+    if (!wid || isInfiniteAmmo(wid)) ctx.fillText(`彈 ∞${wid ? '（底線/近戰）' : ''}`, x + pad + 14, yt + 29);
+    else {
+      ctx.fillText(`彈 ${aAmmo}  儲備 ${ammoStock[wid] | 0}`, x + pad + 14, yt + 29);
+      if (manage) {
+        uiButton(x + w - 74, yt + 19, 21, 15, '−', () => allocAmmo(mi, -1, slot), { font: 'bold 12px Consolas', enabled: aAmmo > 0 });
+        uiButton(x + w - 30, yt + 19, 21, 15, '+', () => allocAmmo(mi, +1, slot), { font: 'bold 12px Consolas', enabled: (ammoStock[wid] | 0) > 0 });
+      }
+    }
+  };
+  weaponBlock(y + 42, 1);   // 主武器
+  weaponBlock(y + 76, 2);   // 副武器
+  row(y + 108, 20, 'rgba(192,160,255,0.14)', `SK ${r.abilityId ? ABILITIES[r.abilityId].name : '—'}`, manage && sel && sel.kind === 'ability',
+    () => equipAbilityFromWarehouse(restSel.idx, mi), () => unequipAbility(mi), !!r.abilityId);
+  row(y + 130, 20, 'rgba(159,208,224,0.16)', `🛡 ${r.equipId ? EQUIPMENT[r.equipId].name : '—'}`, manage && sel && sel.kind === 'equip',
+    () => equipGearFromWarehouse(restSel.idx, mi, 'equip', 'equipId'), () => unequipGear(mi, 'equip', 'equipId'), !!r.equipId);
+  row(y + 152, 20, 'rgba(255,210,125,0.16)', `C ${r.itemId ? ITEMS[r.itemId].name + ' ×' + (r.itemCount || 0) : '—'}`, manage && sel && sel.kind === 'item',
+    () => equipGearFromWarehouse(restSel.idx, mi, 'item', 'itemId'), () => unequipGear(mi, 'item', 'itemId'), !!r.itemId);
   // TARGET 階段：整卡＝指派目標
   if (restPhase === 'TARGET') {
     ctx.fillStyle = 'rgba(255,210,125,0.10)'; ctx.fillRect(x, y, w, h);
@@ -4011,7 +4012,7 @@ function drawRest() {
   ctx.textAlign = 'left';
 
   // 配裝卡（含個性/武器/技能/裝備/道具/彈藥）
-  const n = roster.length, perRow = 5, cw = 234, ch = 164, gap = 12;
+  const n = roster.length, perRow = 5, cw = 234, ch = 176, gap = 12;   // 主/副武器分開兩列＝卡片加高
   for (let i = 0; i < n; i++) {
     const inRow = Math.min(n - Math.floor(i / perRow) * perRow, perRow);
     const totalW = inRow * cw + (inRow - 1) * gap;
