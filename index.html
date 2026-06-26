@@ -510,6 +510,15 @@ const ENEMY_TYPES = {
   civ:        { name: '平民',   weaponId: 'pistol',  hp: 30,              moveSpeed: 95,                     personality: 'holder',  hue: 150, radius: 11, opensDoors: false },                                  // 事件演員(小男孩等)；演出鎖控制時不行動、開打才交戰。之後有 asset 換皮、邏輯不變
 };
 const ENEMY_TYPE_IDS = Object.keys(ENEMY_TYPES);
+// 陣營登錄（資料驅動，N 個易擴充）：要加新勢力＝在此加一條 + spawn 用其 id 即可，戰鬥/AI/繪製不必改碼。
+// hostile 預設「不同陣營即互敵、同陣營為友軍」→ 搜打撤的「多個抱團小組各自為一勢力(FFA + 組內結盟)」自然成立。
+const FACTIONS = {
+  player: { name: '我方', hue: 205 },   // 唯一可操控陣營（在 players）；其餘皆 AI（在 enemies），faction 任意字串
+  enemy:  { name: '駐軍', hue: null },   // 一般關卡 AI（hue null＝各 ENEMY_TYPE 自己的色，維持原樣）
+  rioter: { name: '暴民', hue: 320 },   // 暴動第三勢力（之後可隨意再加 gangA/gangB… 各成一勢力）
+};
+const hostile = (a, b) => a !== b;                 // 不同陣營＝互敵、同陣營＝友軍
+const factionHue = (fid, fb) => { const f = FACTIONS[fid]; return (f && f.hue != null) ? f.hue : fb; };
 
 // 招募隨機（全部都隨機、無固定基準）：名字/色相/感知/武器/個性
 const UNIT_NAMES = ['Guard', 'Sentry', 'Ghost', 'Vanguard', 'Warden', 'Wisp', 'Echo', 'Raven', 'Slate', 'Cinder', 'Marlow', 'Vesper', 'Koda', 'Bishop', 'Reed', 'Tace', 'Lark', 'Nyx'];
@@ -881,6 +890,62 @@ const MAPS = {
       { nodeId: 7, personality: 'flanker' },
     ],
     timeBudget: 200,
+  },
+  // riot：暴動街區（多陣營前置作業）。駐軍(東·守·面西) vs 暴民(北/中·推·面東) 開幕互毆；玩家從西南進、趁亂繞到東側撤離。
+  riot: {
+    label: '暴動街區', category: 'urban', roles: ['normal'], eventMap: true,
+    walls: [
+      { x1: 40, y1: 40, x2: 1240, y2: 40 }, { x1: 1240, y1: 40, x2: 1240, y2: 680 },
+      { x1: 1240, y1: 680, x2: 40, y2: 680 }, { x1: 40, y1: 680, x2: 40, y2: 40 },
+      { x1: 520, y1: 40, x2: 520, y2: 150 },    // 北側建物隔牆（製造北巷）
+      { x1: 760, y1: 560, x2: 760, y2: 680 },   // 南側建物隔牆（製造南巷）
+    ],
+    doors: [],
+    lowWalls: [
+      { x1: 940, y1: 280, x2: 940, y2: 440 },   // 駐軍東側路障
+      { x1: 980, y1: 280, x2: 980, y2: 440 },
+      { x1: 360, y1: 300, x2: 460, y2: 300 },   // 中央散落掩體
+      { x1: 700, y1: 420, x2: 800, y2: 420 },
+    ],
+    areas: [
+      { x: 600, y: 320, w: 70, h: 50, mat: 'cover' },   // 翻覆車輛/攤位（擋視機率擋彈）
+      { x: 300, y: 470, w: 80, h: 50, mat: 'cover' },
+    ],
+    bushes: [], destructibles: [], buttons: [],
+    waypoints: [
+      { id: 0, pos: { x: 150, y: 560 }, tags: ['spawn'] },     // 西南＝玩家進場側
+      { id: 1, pos: { x: 150, y: 360 }, tags: ['patrol'] },
+      { id: 2, pos: { x: 150, y: 150 }, tags: ['patrol'] },    // 西北＝暴民
+      { id: 3, pos: { x: 400, y: 560 }, tags: ['cover'] },     // 南線（玩家繞行）
+      { id: 4, pos: { x: 400, y: 360 }, tags: ['choke'] },     // 中央＝交火帶
+      { id: 5, pos: { x: 400, y: 150 }, tags: ['patrol'] },    // 北＝暴民
+      { id: 6, pos: { x: 700, y: 560 }, tags: ['cover'] },     // 南線
+      { id: 7, pos: { x: 700, y: 360 }, tags: ['choke'] },     // 中央
+      { id: 8, pos: { x: 700, y: 150 }, tags: ['flank'] },     // 北＝暴民
+      { id: 9, pos: { x: 1000, y: 560 }, tags: ['vantage'] },  // 東南＝駐軍
+      { id: 10, pos: { x: 1000, y: 360 }, tags: ['vantage'] }, // 東＝駐軍守點
+      { id: 11, pos: { x: 1000, y: 150 }, tags: ['vantage'] }, // 東北＝駐軍
+      { id: 12, pos: { x: 1180, y: 360 }, tags: ['patrol'] },  // 東＝撤離側
+    ],
+    edges: [
+      [2, 1], [1, 0], [5, 4], [4, 3], [8, 7], [7, 6], [11, 10], [10, 9],
+      [2, 5], [5, 8], [8, 11], [1, 4], [4, 7], [7, 10], [0, 3], [3, 6], [6, 9],
+      [10, 12], [9, 12],
+    ],
+    entryPoints: [{ x: 110, y: 560 }],
+    extractionPoints: [{ x: 1190, y: 360 }],
+    enemySpawns: [
+      // 駐軍（faction enemy）：東側守、面西（朝暴民/玩家）
+      { nodeId: 10, type: 'heavy_lmg', faction: 'enemy', facing: Math.PI },
+      { nodeId: 11, type: 'heavy_shot', faction: 'enemy', facing: Math.PI },
+      { nodeId: 9, type: 'grunt', faction: 'enemy', facing: Math.PI },
+      // 暴民（faction rioter）：北/中推進、面東（朝駐軍）
+      { nodeId: 5, type: 'grunt', personality: 'rusher', faction: 'rioter', facing: 0 },
+      { nodeId: 8, type: 'grunt_flank', faction: 'rioter', facing: 0 },
+      { nodeId: 2, type: 'grunt', personality: 'rusher', faction: 'rioter', facing: 0 },
+      { nodeId: 4, type: 'grunt', personality: 'rusher', faction: 'rioter', facing: 0 },
+    ],
+    prisoners: [],
   },
   // intro：第0關（序章/教學）。管制室(左) → 控制台 → 出口門(x900) → 守衛廊道 → 撤離(右)。
   // 主角/同僚/守衛由 startIntro 以腳本放置，非 enemySpawns；timeBudget 由 startIntro 設超大（無追兵）。
@@ -1300,12 +1365,12 @@ function makePlayer(i, cfg, pos) {
     lastSeenPos: null, lastSeenT: -Infinity, _seenNow: false,   // 敵人共享情報：此我方最後被任一敵人看到的位置/時間
   };
 }
-function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.PI, typeId = 'grunt') {
+function makeEnemy(nodeId, personalityName, isReinforce = false, facing = Math.PI, typeId = 'grunt', faction = 'enemy') {
   const TYPE = ENEMY_TYPES[typeId] || ENEMY_TYPES.grunt;
   const W = WEAPONS[TYPE.weaponId];
   personalityName = personalityName || TYPE.personality;   // spawn 未指定個性 → 用類型預設
   return {
-    id: enemyIdSeq++, faction: 'enemy', dead: false, typeId, type: TYPE, weaponId: TYPE.weaponId,
+    id: enemyIdSeq++, faction: FACTIONS[faction] ? faction : 'enemy', dead: false, typeId, type: TYPE, weaponId: TYPE.weaponId,
     pos: { x: wp(nodeId).pos.x, y: wp(nodeId).pos.y }, facing, radius: TYPE.radius || CONFIG.unitRadius,
     hp: TYPE.hp, maxHp: TYPE.hp,
     state: 'IDLE',   // 純狀態機：IDLE(守點被動) → ENGAGED(latch、看到/聽到/被打→永不取消)
@@ -1412,7 +1477,7 @@ function startMission() {
     if (!players.some(p => p.hasFile) && players.length) players[0].hasFile = true;
   } else { for (const p of players) p.hasFile = false; }   // 沙盒/編輯試玩/最終挑戰不啟用檔案機制（最終＝撤出≥1 即勝）
   prisoners = (MAP.prisoners || []).map(o => ({ pos: { x: o.x, y: o.y }, freed: false }));   // 俘虜（每場重置）
-  for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type); enemies.push(e); commitReservation(e, e.currentNode); }
+  for (const s of MAP.enemySpawns) { const e = makeEnemy(s.nodeId, s.personality, false, s.facing, s.type, s.faction); enemies.push(e); commitReservation(e, e.currentNode); }
   // 每清一關多放幾名 rusher（暫定的上升張力，待路徑圖時再正式設計難度）
   if (!MAP.eventMap) for (let k = 0; k < missionIndex; k++) { const sp = MAP.enemySpawns[k % MAP.enemySpawns.length]; enemies.push(makeEnemy(sp.nodeId, 'rusher')); }   // 事件地圖不加難度遞增兵
   patrolPool = computePatrolPool();   // 本場巡邏點池（IDLE grunt 巡邏用）
@@ -2231,9 +2296,9 @@ function damageUnit(u, dmg, pierce = 0, fromAng = null) {
   const coneHalf = (u.coneHalfDeg || CONFIG.vision.coneHalfDeg) * Math.PI / 180;
   let flanked = (fromAng != null) && Math.abs(angDiff(fromAng, u.facing)) > coneHalf;   // 錐外＝繞背
   if (flanked && passiveNegateCrit(u)) flanked = false;                                    // 眼觀四面/不動如山(靜止)：玩家不吃暴擊加成（仍有正面減傷）
-  const surprise = (u.faction === 'enemy' && u.state === 'IDLE');                          // 閒置敵人被突襲（僅對敵）
+  const surprise = (u.faction !== 'player' && u.state === 'IDLE');                          // 閒置 AI 被突襲（任一 AI 陣營）
   const mult = flanked ? CONFIG.flank.flankMult : (surprise ? CONFIG.flank.surpriseMult : 1);  // 取較高、不相乘
-  if (u.faction === 'enemy') {
+  if (u.faction !== 'player') {   // 任一 AI 陣營被打
     u.state = 'ENGAGED';   // 被攻擊（即使被甲擋下）也進入交戰（latch）
     if (fromAng != null) registerHitThreat(u, fromAng);   // 被擊中→把「來向」當局部脅威傳給：本人＋看得到本人的敵＋近隣（解側翼魚貫＝後續的人出來就朝來向）
     if (!flanked && u.armor > 0 && Math.random() < u.armor * (1 - pierce)) { spawnBlock(u.pos); return; }   // 裝甲：整發擋下非穿甲（繞背無視）
@@ -2367,7 +2432,7 @@ function updateBullets(dt) {
       }
     }
     if (!gone) {
-      const targets = b.faction === 'player' ? enemies.filter(e => !e.dead) : activePlayers();
+      const targets = [...activePlayers(), ...enemies.filter(e => !e.dead)].filter(t => hostile(b.faction, t.faction));   // 多陣營：打所有與射手敵對的單位（玩家/駐軍/暴民…）
       for (const t of targets) if (segCircle(old, b, t.pos, t.radius)) {
         if (b.flash) { t.flash = Math.min(CONFIG.flash.max, (t.flash || 0) + b.flash); gone = true; break; }   // 閃光彈丸：累積暈眩、不造成傷害（中越多顆越暈）
         let dmg = b.dmg;
@@ -2595,11 +2660,17 @@ function registerHitThreat(victim, fromAng) {
   const give = (e) => { e.threatPos = { x: tp.x, y: tp.y }; e.threatT = simTime; if (e.state !== 'ENGAGED') e.state = 'ENGAGED'; };
   give(victim);
   const R = CONFIG.hunt.threatShareRadius;
-  for (const o of enemies) { if (o.dead || o === victim) continue; if (dist(o.pos, victim.pos) <= R || canSee(o, victim.pos)) give(o); }
+  for (const o of enemies) { if (o.dead || o === victim || o.faction !== victim.faction) continue; if (dist(o.pos, victim.pos) <= R || canSee(o, victim.pos)) give(o); }   // 只分享給同陣營友軍
 }
 function nearestKnownPlayer(pos) {   // knownGrace 內被任一敵看過的最近我方（追其「已知位置」）
   let best = null, bd = Infinity;
   for (const p of activePlayers()) { if (simTime - p.lastSeenT > CONFIG.hunt.knownGrace) continue; const d = dist(pos, p.lastSeenPos || p.pos); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+// 多陣營：最近、本隻看得到的「他陣營 AI」（暴動＝即時互毆，不走玩家那套知識/潛行記憶）
+function nearestHostileAI(e) {
+  let best = null, bd = Infinity;
+  for (const o of enemies) { if (o.dead || !hostile(e.faction, o.faction) || !canSee(e, o.pos)) continue; const d = dist(e.pos, o.pos); if (d < bd) { bd = d; best = o; } }
   return best;
 }
 function searchMoveTo(e, dt) {   // 走向焦點區最近的未清查節點（沿圖）
@@ -2622,10 +2693,12 @@ function huntStep(e, dt) {   // 沒有已知目標：有焦點區→清查；否
 
 function enemyTick(e, dt) {
   const f = nearestFriendly(e.pos);
+  const aiFoe = nearestHostileAI(e);   // 多陣營：看得到的他陣營 AI
   // 識別空窗（潛行）：IDLE 時看到玩家不立刻交戰，先累積 detect；滿才 ENGAGED。快速閃過＝累不滿。
   // （槍聲 alertEnemiesNear / 被擊中 damageUnit 仍是瞬間 ENGAGED，繞過此空窗。）
   if (e.state !== 'ENGAGED') {
-    if (f && canSee(e, f.pos)) {
+    if (aiFoe) { e.detect = 1; e.state = 'ENGAGED'; }   // 暴動：看到他陣營 AI＝立即交戰（無潛行空窗、武裝集團互毆很明顯）
+    else if (f && canSee(e, f.pos)) {
       const d = dist(e.pos, f.pos);
       let rate = 1 / CONFIG.stealth.identifyTime;
       if (d <= e.senseRadius) rate *= CONFIG.stealth.distNearMul;                          // 貼臉近乎瞬識
@@ -2642,6 +2715,10 @@ function enemyTick(e, dt) {
   // --- ENGAGED：共享情報 → KNOWN(追已知位置/親眼才開火) 或 HUNT(搜索焦點 / 全場巡邏) ---
   if (e.openedDoors) e.openedDoors = null;   // 交戰後永不關門（清掉巡邏期的待關清單）
   let tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
+  if (aiFoe) {   // 多陣營：他陣營 AI（直接視線）也是交戰目標，取較近者
+    const dPlayer = tgt ? dist(e.pos, tgt.lastSeenPos || tgt.pos) : Infinity;
+    if (dist(e.pos, aiFoe.pos) < dPlayer) tgt = aiFoe;
+  }
   let threatOnly = false;   // 無全體已知目標、但自己有被擊中來向記憶＝朝來向推進/回頭（不對空地開火）
   if (!tgt && e.threatPos && simTime - e.threatT <= CONFIG.hunt.threatGrace) { tgt = { pos: e.threatPos, lastSeenPos: e.threatPos, facing: 0, _threat: true }; threatOnly = true; }
   if (!tgt) { e.engageTimer = 0; huntStep(e, dt); openDoorsNear(e, false); return; }   // 無已知目標＝沒人看得到、也無來向 → 搜索/巡邏（只開不關）
@@ -3470,7 +3547,7 @@ function drawEnemies() {
     if (e.dead) continue;
     if (!debugView && !isRevealed(e) && !(cutscene && cutscene.lock)) continue;   // 未被我方感知（含躲草叢）→ 不繪；演出鎖控制時交給聚光迷霧（同事永遠在聚光內）
     const low = e.hp / e.maxHp <= 0.4;
-    const hue = e.isReinforce ? 18 : (e.type ? e.type.hue : 0);
+    const hue = factionHue(e.faction, e.isReinforce ? 18 : (e.type ? e.type.hue : 0));   // 多陣營：非'enemy'陣營用 FACTIONS 色（暴民洋紅…）；'enemy' 沿用各類型色
     drawUnitBody(e, hsl(hue, 65, low ? 38 : 48), hsl(hue, 70, 65), 2);
     if (e.armor > 0) {   // 裝甲：外加一圈板甲標記（金屬色）
       ctx.strokeStyle = hsl(hue, 25, 82); ctx.lineWidth = 2;
@@ -4945,7 +5022,7 @@ function initSandboxUI() {
 
     const h3b = document.createElement('h3'); h3b.textContent = '地圖'; card.appendChild(h3b);
     const r2 = document.createElement('div'); r2.className = 'row';
-    sandboxMapSel = document.createElement('select'); ['alpha', 'bravo', 'outpost', 'lanes'].forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k + '（' + (MAPS[k] ? MAPS[k].label : k) + '）'; sandboxMapSel.appendChild(o); });
+    sandboxMapSel = document.createElement('select'); ['alpha', 'bravo', 'outpost', 'lanes', 'riot', 'finale'].forEach(k => { const o = document.createElement('option'); o.value = k; o.textContent = k + '（' + (MAPS[k] ? MAPS[k].label : k) + '）'; sandboxMapSel.appendChild(o); });
     const fill = document.createElement('button'); fill.textContent = '↧ 載入此內建到下方'; fill.addEventListener('click', () => { sandboxMapText.value = JSON.stringify(MAPS[sandboxMapSel.value], null, 2); });
     const mhint = document.createElement('span'); mhint.className = 'muted'; mhint.textContent = '下方空白＝用左側內建；貼上 JSON＝用貼上的';
     r2.appendChild(sandboxMapSel); r2.appendChild(fill); r2.appendChild(mhint); card.appendChild(r2);
