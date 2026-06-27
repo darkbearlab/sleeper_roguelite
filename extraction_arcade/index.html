@@ -192,10 +192,13 @@ const CONFIG = {
   },
   // 搜打撤 arcade 變體（複製分家、獨立平衡）：寶物生成 / 獵人 / 成本計分 / 格數背包
   arcade: {
-    treasureCount: 11,        // 每局生成的寶物數（從可生成點抽子集；大圖故較多）
+    treasureCount: 12,        // 每局生成的寶物數（從可生成點抽子集；大圖故較多）
     pickupRadius: 26,         // 走到多近自動撿起寶物
     hunters: 3,               // 獵人數（各自成一勢力＝FFA）
-    hunterSatisfy: [400, 700],  // 獵人滿意值區間（背包寶值 ≥ 此 → 轉撤離）；每名在此區間隨機
+    hunterSatisfy: [300, 600],  // 獵人滿意值區間（背包寶值 ≥ 此 → 轉撤離）；較低＝較易達成、看得到有人成功撤離
+    hunterEngage: { flanker: 360, holder: 130 },  // 獵人交戰半徑（rusher=無限見人就打；超出且沒被打＝不理、繼續搜寶；holder＝幾乎只自衛）
+    identifyTime: 1.3,        // arcade：玩家被 IDLE 敵識別到所需秒數（比基準長＝較不易瞬間鎖定，整體沒那麼積極）
+    idleViewRange: 300,       // arcade：IDLE 視錐有限視距（比基準短）
     costPerShot: 2,           // 每發子彈成本（計分：score = 撤出寶值 − 成本）
     leaderboardMax: 8,        // 本機排行榜保留名次
     map: 'bigyard',           // 預設用圖（大型搜索場；'alpha'＝小圖，設定畫面可選）
@@ -1282,10 +1285,10 @@ function buildMapDerived(key) {
   nextHop = buildNextHop();
 }
 // 搜打撤 arcade 用的大型搜索場（程序生成的格狀路網＝保證連通；掩體放格子中心、不壓 waypoint 邊）。
-// 比 alpha(1280×720) 大很多＝適合「搜」；相機不夾 WORLD 故支援大地圖。
-function makeBigArcadeMap() {
-  const cols = 8, rows = 6, cell = 240, margin = 160;
-  const W = margin * 2 + (cols - 1) * cell, H = margin * 2 + (rows - 1) * cell;   // 2000 × 1520
+// 參數化 cols/rows（設定畫面選大小）；掩體與住民配置吃 srand＝每局不同。相機不夾 WORLD 故支援大地圖。
+function makeBigArcadeMap(opts) {
+  const cols = (opts && opts.cols) || 8, rows = (opts && opts.rows) || 6, cell = 240, margin = 160;
+  const W = margin * 2 + (cols - 1) * cell, H = margin * 2 + (rows - 1) * cell;
   const nid = (c, r) => r * cols + c;
   const walls = [
     { x1: 40, y1: 40, x2: W - 40, y2: 40 }, { x1: W - 40, y1: 40, x2: W - 40, y2: H - 40 },
@@ -1297,32 +1300,28 @@ function makeBigArcadeMap() {
     if (c < cols - 1) edges.push([nid(c, r), nid(c + 1, r)]);
     if (r < rows - 1) edges.push([nid(c, r), nid(c, r + 1)]);
   }
-  let k = 0;
-  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {   // 掩體：放在 4 個 waypoint 圍出的格子中心（密一點＝斷視線、開場不會一眼互看打成一團）
-    const cx = margin + c * cell + cell / 2, cy = margin + r * cell + cell / 2, kind = (c * 2 + r * 3 + k * 5) % 8; k++;
-    if (kind === 0 || kind === 1) walls.push(...rectWalls(cx - 52, cy - 52, cx + 52, cy + 52));            // 實體掩體塊（擋視線/彈、繞行）
-    else if (kind === 2 || kind === 3) bushes.push({ x: cx - 78, y: cy - 62, w: 156, h: 124 });            // 草叢（潛行遮蔽、破壞視線）
-    else if (kind === 4) areas.push({ x: cx - 58, y: cy - 46, w: 116, h: 92, mat: 'cover' });               // 掩體區（車輛等）
-    else if (kind === 5) areas.push({ x: cx - 70, y: cy - 52, w: 140, h: 104, mat: 'lowcover' });           // 低矮掩體叢（越看越射、玩家減速）
-    // kind 6/7＝留空（開闊長廊）
+  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {   // 掩體：放格子中心（多一點＝斷視線、開場不會一眼互看）；吃 srand＝每局不同
+    const cx = margin + c * cell + cell / 2, cy = margin + r * cell + cell / 2, roll = srand();
+    if (roll < 0.22) walls.push(...rectWalls(cx - 52, cy - 52, cx + 52, cy + 52));            // ~22% 實體掩體塊（擋視線/彈、繞行）
+    else if (roll < 0.48) bushes.push({ x: cx - 78, y: cy - 62, w: 156, h: 124 });            // ~26% 草叢（潛行遮蔽、破壞視線）
+    else if (roll < 0.62) areas.push({ x: cx - 58, y: cy - 46, w: 116, h: 92, mat: 'cover' }); // ~14% 掩體區（車輛等）
+    else if (roll < 0.78) areas.push({ x: cx - 70, y: cy - 52, w: 140, h: 104, mat: 'lowcover' }); // ~16% 低矮掩體叢（越看越射、玩家減速）
+    // 其餘 ~22%＝留空（開闊長廊）
   }
+  const pickInterior = () => nid(1 + Math.floor(srand() * (cols - 2)), 1 + Math.floor(srand() * (rows - 2)));   // 內部節點（避開外圈／進撤角）
+  const resCount = clamp(Math.round(cols * rows / 14), 4, 8), stypes = ['flanker', 'rusher', 'heavy_shot'], enemySpawns = [];
+  for (let i = 0; i < resCount; i++) { const t = stypes[i % 3]; enemySpawns.push(t === 'heavy_shot' ? { nodeId: pickInterior(), type: 'heavy_shot', facing: Math.PI } : { nodeId: pickInterior(), personality: t, facing: i % 2 ? 0 : Math.PI }); }
   return {
     label: '大型搜索場', category: 'field', roles: [], tier: 1,
     walls, doors: [], lowWalls: [], buttons: [], bushes, destructibles: [], areas, waypoints, edges,
     entryPoints: [{ x: margin, y: H - margin }],          // 左下進場
     extractionPoints: [{ x: W - margin, y: margin }],     // 右上撤離（對角最遠＝得穿越全場）
-    enemySpawns: [
-      { nodeId: nid(2, 2), personality: 'flanker', facing: 0 },
-      { nodeId: nid(4, 1), personality: 'rusher', facing: Math.PI },
-      { nodeId: nid(5, 3), type: 'heavy_shot', facing: Math.PI },
-      { nodeId: nid(3, 4), personality: 'flanker', facing: 0 },
-      { nodeId: nid(6, 2), personality: 'rusher', facing: Math.PI },
-      { nodeId: nid(5, 4), type: 'heavy_shot', facing: 0 },
-    ],
-    width: W, height: H,
+    enemySpawns, width: W, height: H,
   };
 }
-MAPS.bigyard = makeBigArcadeMap();   // 註冊進地圖庫（buildMapDerived 吃 key）
+const ARCADE_SIZES = { m: { cols: 7, rows: 5 }, l: { cols: 9, rows: 7 }, xl: { cols: 12, rows: 8 } };   // 中 / 大 / 特大
+function applyArcadeMapSize() { MAPS.bigyard = makeBigArcadeMap(ARCADE_SIZES[arcOpt('mapSize')] || ARCADE_SIZES.l); }
+MAPS.bigyard = makeBigArcadeMap(ARCADE_SIZES.l);   // 註冊進地圖庫（buildMapDerived 吃 key；預設大）
 
 buildMapDerived('alpha');   // 載入時先建好預設圖，讓全域衍生值存在
 
@@ -2905,12 +2904,18 @@ function huntStep(e, dt) {   // 沒有已知目標：有焦點區→清查；否
 }
 
 function enemyTick(e, dt) {
+  // 獵人搜滿（或已轉撤）＝帶寶逃，無視交火＝玩家看得到「有人成功撤離」
+  if (e.hunter && (e._extracting || bagValue(e) >= e.satisfaction)) { hunterExtractStep(e, dt); return; }
   const f = nearestFriendly(e.pos);
   const aiFoe = nearestHostileAI(e);   // 多陣營：看得到的他陣營 AI
   // 識別空窗（潛行）：IDLE 時看到玩家不立刻交戰，先累積 detect；滿才 ENGAGED。快速閃過＝累不滿。
   // （槍聲 alertEnemiesNear / 被擊中 damageUnit 仍是瞬間 ENGAGED，繞過此空窗。）
   if (e.state !== 'ENGAGED') {
-    if (aiFoe) { e.detect = 1; e.state = 'ENGAGED'; }   // 暴動：看到他陣營 AI＝立即交戰（無潛行空窗、武裝集團互毆很明顯）
+    if (e.hunter) {   // 獵人＝吃性格的交戰半徑（謹慎型看到遠方敵人也不理、繼續搜寶）；被打過才會主動回擊
+      if (hunterShouldFight(e)) { e.detect = 1; e.state = 'ENGAGED'; }
+      else { hunterIdleTick(e, dt); return; }
+    }
+    else if (aiFoe) { e.detect = 1; e.state = 'ENGAGED'; }   // 駐軍/暴民：看到他陣營 AI＝立即交戰（武裝集團互毆很明顯）
     else if (f && canSee(e, f.pos)) {
       const d = dist(e.pos, f.pos);
       let rate = 1 / CONFIG.stealth.identifyTime;
@@ -2922,15 +2927,19 @@ function enemyTick(e, dt) {
     } else {
       e.detect = Math.max(0, e.detect - CONFIG.stealth.decay * dt);   // 失去視線 → 識別衰退
     }
-    if (e.state !== 'ENGAGED') { if (e.hunter) hunterIdleTick(e, dt); else enemyIdleTick(e, dt); return; }   // 仍守點被動（獵人＝尋寶/撤退）
+    if (e.state !== 'ENGAGED') { enemyIdleTick(e, dt); return; }   // 仍守點被動（獵人在上面已 return）
   }
 
   // --- ENGAGED：共享情報 → KNOWN(追已知位置/親眼才開火) 或 HUNT(搜索焦點 / 全場巡邏) ---
   if (e.openedDoors) e.openedDoors = null;   // 交戰後永不關門（清掉巡邏期的待關清單）
-  let tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
-  if (aiFoe) {   // 多陣營：他陣營 AI（直接視線）也是交戰目標，取較近者
-    const dPlayer = tgt ? dist(e.pos, tgt.lastSeenPos || tgt.pos) : Infinity;
-    if (dist(e.pos, aiFoe.pos) < dPlayer) tgt = aiFoe;
+  let tgt;
+  if (e.hunter) tgt = hunterShouldFight(e);   // 獵人：只打交戰半徑內的（謹慎型＝離遠就不理、回去搜寶）
+  else {
+    tgt = nearestKnownPlayer(e.pos);   // 任一敵人在 knownGrace 內看過的最近我方（位置全體共享）
+    if (aiFoe) {   // 多陣營：他陣營 AI（直接視線）也是交戰目標，取較近者
+      const dPlayer = tgt ? dist(e.pos, tgt.lastSeenPos || tgt.pos) : Infinity;
+      if (dist(e.pos, aiFoe.pos) < dPlayer) tgt = aiFoe;
+    }
   }
   let threatOnly = false;   // 無全體已知目標、但自己有被擊中來向記憶＝朝來向推進/回頭（不對空地開火）
   if (!tgt && e.threatPos && simTime - e.threatT <= CONFIG.hunt.threatGrace) { tgt = { pos: e.threatPos, lastSeenPos: e.threatPos, facing: 0, _threat: true }; threatOnly = true; }
@@ -3005,12 +3014,12 @@ function arcadeDateStr() { try { return new Date().toISOString().slice(0, 10); }
 function arcadeFlash(s) { arcadeMsg = s; arcadeMsgT = simTime + 1.8; }
 
 // 開始前設定（地圖/迷霧/獵人數/寶物數）— localStorage 持久；arcOpt 取「選項 > CONFIG 預設」
-function defaultArcadeOpts() { return { map: CONFIG.arcade.map, noFog: false, hunters: CONFIG.arcade.hunters, treasureCount: CONFIG.arcade.treasureCount }; }
+function defaultArcadeOpts() { return { map: CONFIG.arcade.map, mapSize: 'l', noFog: false, hunters: CONFIG.arcade.hunters, treasureCount: CONFIG.arcade.treasureCount }; }
 function loadArcadeOpts() { let o = null; try { const s = localStorage.getItem('sleeper_arcade_opts_v1'); if (s) o = JSON.parse(s); } catch (e) {} arcadeOpts = Object.assign(defaultArcadeOpts(), o || {}); if (!MAPS[arcadeOpts.map]) arcadeOpts.map = CONFIG.arcade.map; }
 function saveArcadeOpts() { try { localStorage.setItem('sleeper_arcade_opts_v1', JSON.stringify(arcadeOpts)); } catch (e) {} }
 function arcOpt(key) { return (arcadeOpts && arcadeOpts[key] != null) ? arcadeOpts[key] : CONFIG.arcade[key]; }
 // 開始前設定畫面：選好再開打（也是排行榜/玩法說明的入口）
-function enterArcadeSetup() { if (!arcadeOpts) loadArcadeOpts(); arcadeMode = false; scene = 'ARCADESETUP'; releasePointer(); }
+function enterArcadeSetup() { if (!arcadeOpts) loadArcadeOpts(); applyArcadeMapSize(); arcadeMode = false; scene = 'ARCADESETUP'; releasePointer(); }
 
 // 格數背包模型：u.bag = [{kind, id?, name, value, slots, type?, hue}]（玩家／獵人共用）。搜打撤核心＝裝不下就得取捨。
 function bagSlots(u) { return (u.bag || []).reduce((s, it) => s + (it.slots || 1), 0); }
@@ -3030,7 +3039,10 @@ function enterArcade() {
   arcadeMode = true; fromSandbox = false; fromEditor = false; finaleActive = false; playtestMode = false;
   forcedMap = null; introActive = false; cutscene = null; eventActive = false;
   arcadeNoFog = !!arcOpt('noFog');                       // 設定：迷霧全開（debug）
-  srandSeed(Math.floor(Math.random() * 0xFFFFFFFF));   // 每局隨機（寶物/獵人）
+  CONFIG.stealth.identifyTime = CONFIG.arcade.identifyTime;   // arcade：放慢識別＝整體沒那麼積極（住民不秒鎖玩家）
+  CONFIG.stealth.idleViewRange = CONFIG.arcade.idleViewRange;
+  srandSeed(Math.floor(Math.random() * 0xFFFFFFFF));   // 每局隨機（寶物/獵人/掩體布局）
+  if (arcOpt('map') === 'bigyard') applyArcadeMapSize();  // 依所選大小程序生成大圖（吃剛播的種子＝每局布局不同）
   buildMapDerived(arcOpt('map'));                        // 切到所選地圖（重建衍生表 N/adj/EXTRACT/ENTRY…）
   curTimeBudget = MAP.timeBudget || CONFIG.timeBudget;
   for (const d of MAP.doors) d.open = false;
@@ -3081,22 +3093,39 @@ function spreadSpawnNode(avoid, minFromEntry) {
   return best;
 }
 // 生成獵人：每名各自一勢力（FFA），IDLE、帶 hunter 旗標 + 隨機滿意值。分散到外圍、彼此遠離。
+// 性格決定積極度：holder＝幾乎只自衛(搶了就跑)／flanker＝中距才打／rusher＝見人就打。三人時保證至少一名各型。
 function spawnHunters() {
   const facs = ['hunterA', 'hunterB', 'hunterC', 'hunterD'];
-  const types = ['grunt', 'grunt_flank', 'heavy_shot'];
+  const personas = ['holder', 'flanker', 'rusher'];   // 與交戰半徑掛鉤（hunterEngageRange）
+  const typeByPersona = { holder: 'heavy_shot', flanker: 'grunt_flank', rusher: 'grunt' };
   const [lo, hi] = CONFIG.arcade.hunterSatisfy;
   const avoid = [ENTRY ? { x: ENTRY.x, y: ENTRY.y } : { x: 0, y: 0 }];
   for (const e of enemies) if (!e.dead) avoid.push({ x: e.pos.x, y: e.pos.y });   // 避開已生成的住民/野怪叢集（不要一生出來就貼臉）
   for (let i = 0; i < arcOpt('hunters'); i++) {
-    const fac = facs[i % facs.length];
+    const fac = facs[i % facs.length], persona = personas[i % personas.length];
     if (!FACTIONS[fac]) FACTIONS[fac] = { name: '獵人' + String.fromCharCode(65 + i), hue: (25 + i * 35) % 360 };
     const node = spreadSpawnNode(avoid, 340);
     avoid.push({ x: wp(node).pos.x, y: wp(node).pos.y });   // 下一名獵人也避開這名
-    const e = makeEnemy(node, null, false, srand() * Math.PI * 2, types[i % types.length], fac);
+    const e = makeEnemy(node, persona, false, srand() * Math.PI * 2, typeByPersona[persona], fac);
     e.hunter = true; e.bag = []; e._bagCap = CONFIG.arcade.hunterSlots; e.satisfaction = lo + srand() * (hi - lo);
     e.patrols = true;   // 確保能在圖上移動（lootSeek/extract 走 bfsPath）
     enemies.push(e); commitReservation(e, e.currentNode);
   }
+}
+// 獵人交戰半徑（依性格）：rusher 無限見人就打／flanker 中距／holder 幾乎只自衛。被打過＝暫時放大（會回擊）。
+function hunterEngageRange(e) {
+  let base = e.personalityName === 'rusher' ? 1e9 : e.personalityName === 'flanker' ? CONFIG.arcade.hunterEngage.flanker : CONFIG.arcade.hunterEngage.holder;
+  if (simTime - (e.threatT || -1e9) <= CONFIG.hunt.threatGrace) base = Math.max(base, 380);   // 剛被擊中＝回擊（即使謹慎型）
+  return base;
+}
+// 獵人此刻「該打誰」：視野內他陣營 AI 或已知玩家，取交戰半徑內最近者；皆無＝null（回去搜寶）
+function hunterShouldFight(e) {
+  let best = null, bd = hunterEngageRange(e);
+  const foe = nearestHostileAI(e);
+  if (foe) { const d = dist(e.pos, foe.pos); if (d < bd) { bd = d; best = foe; } }
+  const pk = nearestKnownPlayer(e.pos);
+  if (pk) { const d = dist(e.pos, pk.lastSeenPos || pk.pos); if (d < bd) { bd = d; best = pk; } }
+  return best;
 }
 // 寶物生成：地圖 treasureSpots（若有）否則用 waypoints（排除入口/撤離點附近）→ 洗牌抽子集 + 隨機價值
 function genTreasures() {
@@ -3326,6 +3355,8 @@ function drawArcadeSetup() {
   const maps = Object.keys(MAPS).filter(k => k === 'bigyard' || k === 'alpha');
   const m = MAPS[arcadeOpts.map] || MAPS.alpha;
   optRow('地圖', `${arcadeMapLabel(arcadeOpts.map)}（${m.width || 1280}×${m.height || 720}）`, () => { const i = maps.indexOf(arcadeOpts.map); arcadeOpts.map = maps[(i + 1) % maps.length]; saveArcadeOpts(); });
+  const sizes = ['m', 'l', 'xl'], sizeLabel = { m: '中', l: '大', xl: '特大' };
+  optRow('地圖大小', (sizeLabel[arcadeOpts.mapSize] || '大') + (arcadeOpts.map === 'bigyard' ? `（${MAPS.bigyard.width}×${MAPS.bigyard.height}）` : '（僅大型搜索場適用）'), () => { const i = sizes.indexOf(arcadeOpts.mapSize); arcadeOpts.mapSize = sizes[(i + 1) % sizes.length]; applyArcadeMapSize(); saveArcadeOpts(); });
   optRow('戰爭迷霧', arcadeOpts.noFog ? '全開（debug）' : '正常', () => { arcadeOpts.noFog = !arcadeOpts.noFog; saveArcadeOpts(); });
   stepRow('獵人數', arcadeOpts.hunters, () => { arcadeOpts.hunters = clamp(arcadeOpts.hunters - 1, 0, 6); saveArcadeOpts(); }, () => { arcadeOpts.hunters = clamp(arcadeOpts.hunters + 1, 0, 6); saveArcadeOpts(); });
   stepRow('寶物數', arcadeOpts.treasureCount, () => { arcadeOpts.treasureCount = clamp(arcadeOpts.treasureCount - 1, 3, 24); saveArcadeOpts(); }, () => { arcadeOpts.treasureCount = clamp(arcadeOpts.treasureCount + 1, 3, 24); saveArcadeOpts(); });
