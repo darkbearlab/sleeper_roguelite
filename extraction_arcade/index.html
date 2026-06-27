@@ -1298,12 +1298,13 @@ function makeBigArcadeMap() {
     if (r < rows - 1) edges.push([nid(c, r), nid(c, r + 1)]);
   }
   let k = 0;
-  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {   // 掩體：放在 4 個 waypoint 圍出的格子中心
-    const cx = margin + c * cell + cell / 2, cy = margin + r * cell + cell / 2, kind = (c + r * 3 + k * 7) % 5; k++;
-    if (kind === 0) walls.push(...rectWalls(cx - 45, cy - 45, cx + 45, cy + 45));        // 實體掩體塊（擋視線/彈、繞行）
-    else if (kind === 1) bushes.push({ x: cx - 70, y: cy - 55, w: 140, h: 110 });         // 草叢（潛行遮蔽）
-    else if (kind === 2) areas.push({ x: cx - 55, y: cy - 45, w: 110, h: 90, mat: 'cover' }); // 掩體區（車輛等）
-    // kind 3/4＝留空（開闊）
+  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {   // 掩體：放在 4 個 waypoint 圍出的格子中心（密一點＝斷視線、開場不會一眼互看打成一團）
+    const cx = margin + c * cell + cell / 2, cy = margin + r * cell + cell / 2, kind = (c * 2 + r * 3 + k * 5) % 8; k++;
+    if (kind === 0 || kind === 1) walls.push(...rectWalls(cx - 52, cy - 52, cx + 52, cy + 52));            // 實體掩體塊（擋視線/彈、繞行）
+    else if (kind === 2 || kind === 3) bushes.push({ x: cx - 78, y: cy - 62, w: 156, h: 124 });            // 草叢（潛行遮蔽、破壞視線）
+    else if (kind === 4) areas.push({ x: cx - 58, y: cy - 46, w: 116, h: 92, mat: 'cover' });               // 掩體區（車輛等）
+    else if (kind === 5) areas.push({ x: cx - 70, y: cy - 52, w: 140, h: 104, mat: 'lowcover' });           // 低矮掩體叢（越看越射、玩家減速）
+    // kind 6/7＝留空（開闊長廊）
   }
   return {
     label: '大型搜索場', category: 'field', roles: [], tier: 1,
@@ -3065,15 +3066,32 @@ function randomSpawnNode(fromPos, minDist) {
   if (!cand.length) for (let i = 0; i < N; i++) cand.push(i);
   return cand[Math.floor(srand() * cand.length)];
 }
-// 生成獵人：每名各自一勢力（FFA），IDLE、帶 hunter 旗標 + 隨機滿意值
+// 取「離 avoid 全部點都最遠」的 waypoint（≥minFromEntry 離入口）＝把獵人撒到外圍、彼此/離住民都遠＝開場不立刻打成一團
+function spreadSpawnNode(avoid, minFromEntry) {
+  let best = null, bestScore = -1;
+  for (let i = 0; i < N; i++) {
+    if (extractNodeId != null && i === extractNodeId) continue;
+    const p = wp(i).pos;
+    if (ENTRY && dist(p, ENTRY) < minFromEntry) continue;
+    let md = Infinity; for (const a of avoid) md = Math.min(md, dist(p, a));   // 到最近一個 avoid 點的距離
+    const score = md + srand() * 40;   // 取最大者（最孤立的點）＋小亂數抖動避免每次同一點
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  if (best == null) best = randomSpawnNode(ENTRY, 0);
+  return best;
+}
+// 生成獵人：每名各自一勢力（FFA），IDLE、帶 hunter 旗標 + 隨機滿意值。分散到外圍、彼此遠離。
 function spawnHunters() {
   const facs = ['hunterA', 'hunterB', 'hunterC', 'hunterD'];
   const types = ['grunt', 'grunt_flank', 'heavy_shot'];
   const [lo, hi] = CONFIG.arcade.hunterSatisfy;
+  const avoid = [ENTRY ? { x: ENTRY.x, y: ENTRY.y } : { x: 0, y: 0 }];
+  for (const e of enemies) if (!e.dead) avoid.push({ x: e.pos.x, y: e.pos.y });   // 避開已生成的住民/野怪叢集（不要一生出來就貼臉）
   for (let i = 0; i < arcOpt('hunters'); i++) {
     const fac = facs[i % facs.length];
     if (!FACTIONS[fac]) FACTIONS[fac] = { name: '獵人' + String.fromCharCode(65 + i), hue: (25 + i * 35) % 360 };
-    const node = randomSpawnNode(ENTRY, 280);
+    const node = spreadSpawnNode(avoid, 340);
+    avoid.push({ x: wp(node).pos.x, y: wp(node).pos.y });   // 下一名獵人也避開這名
     const e = makeEnemy(node, null, false, srand() * Math.PI * 2, types[i % types.length], fac);
     e.hunter = true; e.bag = []; e._bagCap = CONFIG.arcade.hunterSlots; e.satisfaction = lo + srand() * (hi - lo);
     e.patrols = true;   // 確保能在圖上移動（lootSeek/extract 走 bfsPath）
