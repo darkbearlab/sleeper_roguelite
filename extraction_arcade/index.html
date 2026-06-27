@@ -192,13 +192,13 @@ const CONFIG = {
   },
   // 搜打撤 arcade 變體（複製分家、獨立平衡）：寶物生成 / 獵人 / 成本計分 / 格數背包
   arcade: {
-    treasureCount: 8,         // 每局生成的寶物數（從可生成點抽子集）
+    treasureCount: 11,        // 每局生成的寶物數（從可生成點抽子集；大圖故較多）
     pickupRadius: 26,         // 走到多近自動撿起寶物
-    hunters: 2,               // 獵人數（各自成一勢力＝FFA）
+    hunters: 3,               // 獵人數（各自成一勢力＝FFA）
     hunterSatisfy: [400, 700],  // 獵人滿意值區間（背包寶值 ≥ 此 → 轉撤離）；每名在此區間隨機
     costPerShot: 2,           // 每發子彈成本（計分：score = 撤出寶值 − 成本）
     leaderboardMax: 8,        // 本機排行榜保留名次
-    map: 'alpha',             // MVP 用圖（開闊、有掩體與 waypoint）
+    map: 'bigyard',           // 預設用圖（大型搜索場；'alpha'＝小圖，設定畫面可選）
     backpackSlots: 8,         // 玩家背包格數（搜打撤核心取捨：裝不下＝得割捨或先撤）
     hunterSlots: 6,           // 獵人背包格數
     // 戰利品分類（每顆寶物抽一種）：佔格 slots / 價值池 values / 抽中權重 weight / 顏色 hue
@@ -1281,6 +1281,48 @@ function buildMapDerived(key) {
   extractNodeId = nearestNode(EXTRACT, false);
   nextHop = buildNextHop();
 }
+// 搜打撤 arcade 用的大型搜索場（程序生成的格狀路網＝保證連通；掩體放格子中心、不壓 waypoint 邊）。
+// 比 alpha(1280×720) 大很多＝適合「搜」；相機不夾 WORLD 故支援大地圖。
+function makeBigArcadeMap() {
+  const cols = 8, rows = 6, cell = 240, margin = 160;
+  const W = margin * 2 + (cols - 1) * cell, H = margin * 2 + (rows - 1) * cell;   // 2000 × 1520
+  const nid = (c, r) => r * cols + c;
+  const walls = [
+    { x1: 40, y1: 40, x2: W - 40, y2: 40 }, { x1: W - 40, y1: 40, x2: W - 40, y2: H - 40 },
+    { x1: W - 40, y1: H - 40, x2: 40, y2: H - 40 }, { x1: 40, y1: H - 40, x2: 40, y2: 40 },   // 外牆
+  ];
+  const bushes = [], areas = [], waypoints = [], edges = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) waypoints.push({ id: nid(c, r), pos: { x: margin + c * cell, y: margin + r * cell }, tags: ['patrol'] });
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {   // 格狀邊（沿格線；掩體放格中心故不交叉）
+    if (c < cols - 1) edges.push([nid(c, r), nid(c + 1, r)]);
+    if (r < rows - 1) edges.push([nid(c, r), nid(c, r + 1)]);
+  }
+  let k = 0;
+  for (let r = 0; r < rows - 1; r++) for (let c = 0; c < cols - 1; c++) {   // 掩體：放在 4 個 waypoint 圍出的格子中心
+    const cx = margin + c * cell + cell / 2, cy = margin + r * cell + cell / 2, kind = (c + r * 3 + k * 7) % 5; k++;
+    if (kind === 0) walls.push(...rectWalls(cx - 45, cy - 45, cx + 45, cy + 45));        // 實體掩體塊（擋視線/彈、繞行）
+    else if (kind === 1) bushes.push({ x: cx - 70, y: cy - 55, w: 140, h: 110 });         // 草叢（潛行遮蔽）
+    else if (kind === 2) areas.push({ x: cx - 55, y: cy - 45, w: 110, h: 90, mat: 'cover' }); // 掩體區（車輛等）
+    // kind 3/4＝留空（開闊）
+  }
+  return {
+    label: '大型搜索場', category: 'field', roles: [], tier: 1,
+    walls, doors: [], lowWalls: [], buttons: [], bushes, destructibles: [], areas, waypoints, edges,
+    entryPoints: [{ x: margin, y: H - margin }],          // 左下進場
+    extractionPoints: [{ x: W - margin, y: margin }],     // 右上撤離（對角最遠＝得穿越全場）
+    enemySpawns: [
+      { nodeId: nid(2, 2), personality: 'flanker', facing: 0 },
+      { nodeId: nid(4, 1), personality: 'rusher', facing: Math.PI },
+      { nodeId: nid(5, 3), type: 'heavy_shot', facing: Math.PI },
+      { nodeId: nid(3, 4), personality: 'flanker', facing: 0 },
+      { nodeId: nid(6, 2), personality: 'rusher', facing: Math.PI },
+      { nodeId: nid(5, 4), type: 'heavy_shot', facing: 0 },
+    ],
+    width: W, height: H,
+  };
+}
+MAPS.bigyard = makeBigArcadeMap();   // 註冊進地圖庫（buildMapDerived 吃 key）
+
 buildMapDerived('alpha');   // 載入時先建好預設圖，讓全域衍生值存在
 
 // 感知模型（敵我共用）：有視線，且（近身內 360° 或 前方 90° 視錐內）。視錐距離無限，靠牆截斷。
@@ -1394,6 +1436,9 @@ let arcadeResult = null;     // 結算結果 {won,loot,cost,score,extractedHunte
 let arcadeScores = [];       // 本機排行榜（localStorage）[{score,loot,items,date}]
 let arcadeResultRects = [];  // 結算畫面可點擊按鈕（每幀於 draw 重建）
 let arcadeMsg = '', arcadeMsgT = 0;   // 短暫提示（背包已滿等）：simTime < arcadeMsgT 時顯示
+let arcadeNoFog = false;     // 設定：戰爭迷霧全開（debug＝整張圖+所有單位可見）
+let arcadeOpts = null;       // 開始前設定畫面的選項 {map,noFog,hunters,treasureCount}（localStorage 持久）
+let arcadeSetupRects = [];   // 設定畫面可點擊區域（每幀於 draw 重建）
 let loseReason = '';         // RUN FAILED 原因：'全滅' | '機密檔案遺失'
 let corpses = [];            // 陣亡標記 [{x,y,enemy}]（地上叉叉，整場保留）
 let decals = [];             // 地上血漬/痕跡 [{x,y,r,col}]（上限淘汰、整場保留）
@@ -2958,6 +3003,14 @@ function clearArcadeScores() { arcadeScores = []; saveArcadeScores(); }
 function arcadeDateStr() { try { return new Date().toISOString().slice(0, 10); } catch (e) { return ''; } }
 function arcadeFlash(s) { arcadeMsg = s; arcadeMsgT = simTime + 1.8; }
 
+// 開始前設定（地圖/迷霧/獵人數/寶物數）— localStorage 持久；arcOpt 取「選項 > CONFIG 預設」
+function defaultArcadeOpts() { return { map: CONFIG.arcade.map, noFog: false, hunters: CONFIG.arcade.hunters, treasureCount: CONFIG.arcade.treasureCount }; }
+function loadArcadeOpts() { let o = null; try { const s = localStorage.getItem('sleeper_arcade_opts_v1'); if (s) o = JSON.parse(s); } catch (e) {} arcadeOpts = Object.assign(defaultArcadeOpts(), o || {}); if (!MAPS[arcadeOpts.map]) arcadeOpts.map = CONFIG.arcade.map; }
+function saveArcadeOpts() { try { localStorage.setItem('sleeper_arcade_opts_v1', JSON.stringify(arcadeOpts)); } catch (e) {} }
+function arcOpt(key) { return (arcadeOpts && arcadeOpts[key] != null) ? arcadeOpts[key] : CONFIG.arcade[key]; }
+// 開始前設定畫面：選好再開打（也是排行榜/玩法說明的入口）
+function enterArcadeSetup() { if (!arcadeOpts) loadArcadeOpts(); arcadeMode = false; scene = 'ARCADESETUP'; releasePointer(); }
+
 // 格數背包模型：u.bag = [{kind, id?, name, value, slots, type?, hue}]（玩家／獵人共用）。搜打撤核心＝裝不下就得取捨。
 function bagSlots(u) { return (u.bag || []).reduce((s, it) => s + (it.slots || 1), 0); }
 function bagValue(u) { return (u.bag || []).reduce((s, it) => s + (it.value || 0), 0); }
@@ -2972,10 +3025,12 @@ function scatterBag(u) { if (!u.bag) return; for (const it of u.bag) spawnGround
 
 // 進入一場 arcade 突襲（boot 直接呼叫；結算後「再來一局」也呼叫）。比照 startMission 但單人、無路線圖/檔案。
 function enterArcade() {
+  if (!arcadeOpts) loadArcadeOpts();
   arcadeMode = true; fromSandbox = false; fromEditor = false; finaleActive = false; playtestMode = false;
   forcedMap = null; introActive = false; cutscene = null; eventActive = false;
+  arcadeNoFog = !!arcOpt('noFog');                       // 設定：迷霧全開（debug）
   srandSeed(Math.floor(Math.random() * 0xFFFFFFFF));   // 每局隨機（寶物/獵人）
-  buildMapDerived(CONFIG.arcade.map);                    // 切到 MVP 地圖（重建衍生表 N/adj/EXTRACT/ENTRY…）
+  buildMapDerived(arcOpt('map'));                        // 切到所選地圖（重建衍生表 N/adj/EXTRACT/ENTRY…）
   curTimeBudget = MAP.timeBudget || CONFIG.timeBudget;
   for (const d of MAP.doors) d.open = false;
   for (const d of (MAP.destructibles || [])) { d.cur = d.intact; d.curHp = d.hp; }
@@ -3015,7 +3070,7 @@ function spawnHunters() {
   const facs = ['hunterA', 'hunterB', 'hunterC', 'hunterD'];
   const types = ['grunt', 'grunt_flank', 'heavy_shot'];
   const [lo, hi] = CONFIG.arcade.hunterSatisfy;
-  for (let i = 0; i < CONFIG.arcade.hunters; i++) {
+  for (let i = 0; i < arcOpt('hunters'); i++) {
     const fac = facs[i % facs.length];
     if (!FACTIONS[fac]) FACTIONS[fac] = { name: '獵人' + String.fromCharCode(65 + i), hue: (25 + i * 35) % 360 };
     const node = randomSpawnNode(ENTRY, 280);
@@ -3032,7 +3087,7 @@ function genTreasures() {
   if (MAP.treasureSpots && MAP.treasureSpots.length) spots = MAP.treasureSpots.map(s => ({ x: s.x, y: s.y }));
   else for (let i = 0; i < N; i++) { const p = wp(i).pos; if (ENTRY && dist(p, ENTRY) < 150) continue; if (EXTRACT && dist(p, EXTRACT) < 150) continue; spots.push({ x: p.x, y: p.y }); }
   for (let i = spots.length - 1; i > 0; i--) { const j = Math.floor(srand() * (i + 1)); const t = spots[i]; spots[i] = spots[j]; spots[j] = t; }   // Fisher-Yates（吃種子）
-  const k = Math.min(CONFIG.arcade.treasureCount, spots.length), LT = CONFIG.arcade.lootTypes;
+  const k = Math.min(arcOpt('treasureCount'), spots.length), LT = CONFIG.arcade.lootTypes;
   for (let i = 0; i < k; i++) {
     const s = spots[i], lt = weightedPick(LT, x => x.weight || 1);   // 每顆抽一個分類（吃種子）
     treasures.push({ x: s.x, y: s.y, taken: false, node: nearestNode(s, false), type: lt.id, name: lt.name, slots: lt.slots, hue: lt.hue, value: rngPick(lt.values) });
@@ -3213,11 +3268,64 @@ function drawArcadeResult() {
     arcadeResultRects.push({ x: bx, y: by, w, h, fn });
   };
   mkBtn('再來一局 (R)', cv.width / 2 - 180, enterArcade);
-  mkBtn('清除排行榜', cv.width / 2, () => { clearArcadeScores(); });
-  mkBtn('回主選單', cv.width / 2 + 180, goMenu);
+  mkBtn('設定 (Esc)', cv.width / 2, enterArcadeSetup);
+  mkBtn('清除排行榜', cv.width / 2 + 180, () => { clearArcadeScores(); });
   ctx.textAlign = 'left';
 }
 function arcadeResultClick(x, y) { for (let i = arcadeResultRects.length - 1; i >= 0; i--) { const r = arcadeResultRects[i]; if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.fn(); return; } } }
+
+// 開始前設定畫面（scene ARCADESETUP）：地圖 / 迷霧 / 獵人數 / 寶物數 + 開始 + 排行榜 top-5
+const arcadeMapLabel = (key) => (MAPS[key] && MAPS[key].label) ? MAPS[key].label : key;
+function drawArcadeSetup() {
+  if (!arcadeOpts) loadArcadeOpts();
+  ctx.fillStyle = '#0a0e14'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#7fd0e0'; ctx.font = 'bold 30px Consolas'; ctx.fillText('搜打撤 — 突襲設定', cv.width / 2, 64);
+  ctx.fillStyle = 'rgba(205,214,224,0.8)'; ctx.font = '13px Consolas';
+  ctx.fillText('搜刮戰利品（背包有格數上限）→ 到撤離點離場 → 得分＝撤出寶值 − 開火成本 · 陣亡＝歸零', cv.width / 2, 92);
+  arcadeSetupRects = [];
+  const cx = cv.width / 2, rowH = 44; let y = 138;
+  const optRow = (label, valText, fn) => {
+    ctx.textAlign = 'right'; ctx.fillStyle = '#9fb0c0'; ctx.font = '15px Consolas'; ctx.fillText(label, cx - 16, y + 5);
+    const w = 280, h = 34, bx = cx + 10, by = y - 18;
+    ctx.fillStyle = 'rgba(30,40,55,0.95)'; ctx.fillRect(bx, by, w, h);
+    ctx.strokeStyle = '#5a7a9a'; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, w, h);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 14px Consolas'; ctx.fillText(valText, bx + w / 2, by + 22);
+    arcadeSetupRects.push({ x: bx, y: by, w, h, fn }); y += rowH;
+  };
+  const stepRow = (label, val, dec, inc) => {
+    ctx.textAlign = 'right'; ctx.fillStyle = '#9fb0c0'; ctx.font = '15px Consolas'; ctx.fillText(label, cx - 16, y + 5);
+    const bw = 34, h = 34, by = y - 18, x0 = cx + 10, totW = 280;
+    const minus = { x: x0, y: by, w: bw, h }, plus = { x: x0 + totW - bw, y: by, w: bw, h };
+    ctx.fillStyle = 'rgba(20,26,34,0.9)'; ctx.fillRect(x0 + bw, by, totW - 2 * bw, h);
+    ctx.textAlign = 'center'; ctx.fillStyle = '#e6edf3'; ctx.font = 'bold 16px Consolas'; ctx.fillText('' + val, x0 + totW / 2, by + 22);
+    for (const b of [minus, plus]) { ctx.fillStyle = 'rgba(40,52,68,0.95)'; ctx.fillRect(b.x, b.y, b.w, b.h); ctx.strokeStyle = '#5a7a9a'; ctx.lineWidth = 1.5; ctx.strokeRect(b.x, b.y, b.w, b.h); }
+    ctx.fillStyle = '#cdd6e0'; ctx.font = 'bold 18px Consolas'; ctx.fillText('−', minus.x + minus.w / 2, minus.y + 23); ctx.fillText('+', plus.x + plus.w / 2, plus.y + 23);
+    arcadeSetupRects.push({ x: minus.x, y: minus.y, w: minus.w, h: minus.h, fn: dec });
+    arcadeSetupRects.push({ x: plus.x, y: plus.y, w: plus.w, h: plus.h, fn: inc });
+    y += rowH;
+  };
+  const maps = Object.keys(MAPS).filter(k => k === 'bigyard' || k === 'alpha');
+  const m = MAPS[arcadeOpts.map] || MAPS.alpha;
+  optRow('地圖', `${arcadeMapLabel(arcadeOpts.map)}（${m.width || 1280}×${m.height || 720}）`, () => { const i = maps.indexOf(arcadeOpts.map); arcadeOpts.map = maps[(i + 1) % maps.length]; saveArcadeOpts(); });
+  optRow('戰爭迷霧', arcadeOpts.noFog ? '全開（debug）' : '正常', () => { arcadeOpts.noFog = !arcadeOpts.noFog; saveArcadeOpts(); });
+  stepRow('獵人數', arcadeOpts.hunters, () => { arcadeOpts.hunters = clamp(arcadeOpts.hunters - 1, 0, 6); saveArcadeOpts(); }, () => { arcadeOpts.hunters = clamp(arcadeOpts.hunters + 1, 0, 6); saveArcadeOpts(); });
+  stepRow('寶物數', arcadeOpts.treasureCount, () => { arcadeOpts.treasureCount = clamp(arcadeOpts.treasureCount - 1, 3, 24); saveArcadeOpts(); }, () => { arcadeOpts.treasureCount = clamp(arcadeOpts.treasureCount + 1, 3, 24); saveArcadeOpts(); });
+  y += 10;
+  const sw = 240, sh = 48, sbx = cx - sw / 2;
+  ctx.fillStyle = 'rgba(40,90,70,0.95)'; ctx.fillRect(sbx, y, sw, sh);
+  ctx.strokeStyle = '#5fd06b'; ctx.lineWidth = 2; ctx.strokeRect(sbx, y, sw, sh);
+  ctx.fillStyle = '#dffbe6'; ctx.font = 'bold 18px Consolas'; ctx.textAlign = 'center'; ctx.fillText('▶ 開始突襲 (Enter)', cx, y + 31);
+  arcadeSetupRects.push({ x: sbx, y, w: sw, h: sh, fn: enterArcade });
+  y += sh + 26;
+  ctx.fillStyle = '#cdd6e0'; ctx.font = 'bold 15px Consolas'; ctx.fillText('本機排行榜', cx, y); y += 24;
+  ctx.font = '13px Consolas';
+  const top = arcadeScores.slice(0, 5);
+  if (!top.length) { ctx.fillStyle = '#6b7a89'; ctx.fillText('（尚無紀錄）', cx, y); }
+  else top.forEach((s, i) => { ctx.fillStyle = '#9fb0c0'; ctx.fillText(`${i + 1}.   得分 ${s.score}   ·   寶值 $${s.loot}   ·   ${s.items || 0} 件${s.date ? '   ' + s.date : ''}`, cx, y + i * 22); });
+  ctx.textAlign = 'left';
+}
+function arcadeSetupClick(x, y) { for (let i = arcadeSetupRects.length - 1; i >= 0; i--) { const r = arcadeSetupRects[i]; if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { r.fn(); return; } } }
 
 /* =====================================================================
    Movement helpers
@@ -3345,6 +3453,7 @@ cv.addEventListener('click', () => {
   else if (scene === 'SETTLE') settleClick(mouse.mx, mouse.my);
   else if (scene === 'EVENT') eventClick(mouse.mx, mouse.my);
   else if (scene === 'RUNEND' || scene === 'RUNWIN') goMenu();
+  else if (scene === 'ARCADESETUP') arcadeSetupClick(mouse.mx, mouse.my);
   else if (scene === 'ARCADERESULT') arcadeResultClick(mouse.mx, mouse.my);
   else if (scene === 'MENU') menuClick(mouse.mx, mouse.my);
   else if (scene === 'HQ') hqClick(mouse.mx, mouse.my);
@@ -3440,7 +3549,8 @@ window.addEventListener('keydown', e => {
   }
   if (scene === 'ARMORY') { if (k >= '1' && k <= '9') armoryPick(parseInt(k, 10) - 1); return; }
   if (scene === 'RUNEND' || scene === 'RUNWIN') { if (k === 'r') goMenu(); return; }
-  if (scene === 'ARCADERESULT') { if (k === 'r' || k === 'enter' || k === ' ') enterArcade(); else if (k === 'escape') goMenu(); return; }   // 搜打撤結算：R/Enter 再來一局、Esc 回選單
+  if (scene === 'ARCADESETUP') { if (k === 'enter' || k === ' ') { enterArcade(); e.preventDefault(); } else if (k === 'escape') goMenu(); return; }   // 搜打撤設定：Enter 開始、Esc 進母遊戲選單
+  if (scene === 'ARCADERESULT') { if (k === 'r' || k === 'enter' || k === ' ') enterArcade(); else if (k === 'escape') enterArcadeSetup(); return; }   // 搜打撤結算：R/Enter 再來一局、Esc 回設定
   if (scene === 'MENU') return;   // 主選單以滑鼠點選
   if (scene === 'HQ') { if (k === 'escape' || k === 'backspace') { goMenu(); e.preventDefault(); } return; }   // 總部：Esc/Backspace 回選單，其餘以滑鼠點選
   if (scene === 'ENDING') { if (k === ' ' || k === 'enter') { endingAdvance(); e.preventDefault(); } return; }   // 結局/揭示：空白/Enter 加速或繼續
@@ -3597,6 +3707,7 @@ function draw() {
   if (scene === 'ARMORY') { drawArmory(); return; }
   if (scene === 'RUNEND') { drawRunEnd(); return; }
   if (scene === 'RUNWIN') { drawRunWin(); return; }
+  if (scene === 'ARCADESETUP') { drawArcadeSetup(); return; }
   if (scene === 'ARCADERESULT') { drawArcadeResult(); return; }
 
   // 鎖定滑鼠前＝黑螢幕（不洩漏場面、不破壞氣氛；全關卡適用，含第0關）
@@ -3612,8 +3723,8 @@ function draw() {
   if (debugView) drawDebug();
   ctx.restore();
 
-  // ---- 戰爭迷霧（除錯時關閉）。演出鎖控制時 drawFog 改挖「聚光圈」＝重點區外全是迷霧 ----
-  if (!debugView) drawFog();
+  // ---- 戰爭迷霧（除錯/arcade 迷霧全開時關閉）。演出鎖控制時 drawFog 改挖「聚光圈」＝重點區外全是迷霧 ----
+  if (!debugView && !(arcadeMode && arcadeNoFog)) drawFog();
 
   // ---- 霧上：淡牆骨架（空間參考）+ 機密檔案掉落標記（永遠可見）----
   ctx.save(); applyCam(); drawSkeleton(); drawFileDrop(); drawCacheDrops(); ctx.restore();
@@ -3748,8 +3859,9 @@ function drawCombatStart() {
 
 function drawGrid() {
   ctx.strokeStyle = '#10151d'; ctx.lineWidth = 1;
-  for (let x = 40; x <= 1240; x += 40) { ctx.beginPath(); ctx.moveTo(x, 40); ctx.lineTo(x, 680); ctx.stroke(); }
-  for (let y = 40; y <= 680; y += 40) { ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(1240, y); ctx.stroke(); }
+  const gw = (MAP && MAP.width) ? MAP.width - 40 : 1240, gh = (MAP && MAP.height) ? MAP.height - 40 : 680;   // 隨地圖大小延伸格線
+  for (let x = 40; x <= gw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 40); ctx.lineTo(x, gh); ctx.stroke(); }
+  for (let y = 40; y <= gh; y += 40) { ctx.beginPath(); ctx.moveTo(40, y); ctx.lineTo(gw, y); ctx.stroke(); }
 }
 function drawWalls() {
   ctx.strokeStyle = '#4a5566'; ctx.lineWidth = CONFIG.wallThick; ctx.lineCap = 'round';
@@ -4016,7 +4128,7 @@ function drawPlayers() {
 function drawEnemies() {
   for (const e of enemies) {
     if (e.dead) continue;
-    if (!debugView && !isRevealed(e) && !(cutscene && cutscene.lock)) continue;   // 未被我方感知（含躲草叢）→ 不繪；演出鎖控制時交給聚光迷霧（同事永遠在聚光內）
+    if (!debugView && !isRevealed(e) && !(cutscene && cutscene.lock) && !(arcadeMode && arcadeNoFog)) continue;   // 未被我方感知（含躲草叢）→ 不繪；arcade 迷霧全開＝全部畫出（debug）
     const low = e.hp / e.maxHp <= 0.4;
     const hue = factionHue(e.faction, e.isReinforce ? 18 : (e.type ? e.type.hue : 0));   // 多陣營：非'enemy'陣營用 FACTIONS 色（暴民洋紅…）；'enemy' 沿用各類型色
     drawUnitBody(e, hsl(hue, 65, low ? 38 : 48), hsl(hue, 70, 65), 2);
@@ -4141,7 +4253,7 @@ function drawScreenOverlays() {
   // 被看到的敵人：血條
   for (const e of enemies) {
     if (e.dead) continue;
-    if (!debugView && !isRevealed(e)) continue;
+    if (!debugView && !isRevealed(e) && !(arcadeMode && arcadeNoFog)) continue;
     const s = w2s(e.pos);
     screenBar(s, e.hp / e.maxHp, '#ff6b6b', -e.radius * cam.scale - 10);
   }
@@ -5567,11 +5679,12 @@ function bootPlaytest() {
 }
 loadMeta();   // 載入局外進度（解鎖/情報點）
 loadArcadeScores();   // 搜打撤本機排行榜
+loadArcadeOpts();     // 搜打撤開始前設定（地圖/迷霧/獵人/寶物）
 let __q = ''; try { __q = (typeof location !== 'undefined' && location.search) || ''; } catch (e) {}
 if (/[?&]playtest\b/.test(__q)) bootPlaytest();
 else if (/[?&]sandbox\b/.test(__q) && sandboxEl) enterSandbox();
 else if (/[?&]menu\b/.test(__q)) goMenu();   // ?menu＝進 SLEEPER 母遊戲主選單（沙盒/編輯器等）
-else enterArcade();   // 搜打撤 arcade＝本分支預設進入點
+else enterArcadeSetup();   // 搜打撤 arcade＝本分支預設進入點（先設定畫面再開打）
 requestAnimationFrame(frame);
 </script>
 </body>
